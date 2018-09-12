@@ -1,0 +1,136 @@
+= SWAMP SARIF IO Libraries
+
+
+Module Version: 0.0.1
+
+Last updated on 9-11-2018
+
+=== Name
+swamp-sarif-io - Library to write SARIF files from Perl
+
+=== Description
+The https://continuousassurance.org[Software Assurance Marketplace (SWAMP)] runs software assurance tools, and converts the results of each tool into a common format called SCARF (SWAMP Common Assessment Result Format). There is now a new format being developed by https://www.oasis-open.org[OASIS] called https://github.com/oasis-tcs/sarif-spec[SARIF]. This repository contains a set of libraries that allows a program to write SARIF data from programs written in Perl. 
+
+Documentation for SCARF is available https://github.com/mirswamp/swamp-scarf-io/blob/master/docs/SCARF.pdf[here].
+Documentation for SARIF is available https://github.com/oasis-tcs/sarif-spec/tree/master/Documents/ProvisionalDrafts[here].
+
+=== SYNOPSIS
+[source,perl]
+----
+use SarifJsonWriter;
+
+my $writer = new SarifJsonWriter($arguments);
+
+$writer->AddStartTag($initialData);
+$writer->AddBugInstance($bugData);
+$writer->Close();
+----
+
+=== Requirements
+The following Perl libraries should be installed for the program to work correctly:
+
+- JSON::Streaming::Writer
+
+=== Subroutines
+
+==== new($parameters)
+This is the subroutine used to instantiate the writer. This subroutine expects one parameter, which is a hash with a data structure described below.
+
+==== AddStartTag($initialData)
+This subroutine writes to the SARIF file data that applies to the whole assessment. 
+
+==== AddBugInstance($bugData)
+Every BugInstance in a SCARF file maps to a result object in SARIF. This subroutine writes necessary data from a BugInstance to a result object, as well as storing some data that will be written by the Close() subroutine (when all BugInstances are read). This subroutine should be called after AddStartTag($initialData).
+
+==== Close()
+This subroutine should be called after all BugInstances are read, which is after AddBugInstance($bugData). Data saved from initialData and bugData are written out here and the SARIF file is also closed here.
+
+=== Data Structures
+The following are the data structures used in the callbacks listed above:
+
+==== $parameters
+----
+{
+  filename      => Required. File name of the output sarif file. 
+  pretty        => Optional. 1 by default. Specifies whether the output sarif file is pretty printed.
+  startTime     => Required. The time when the program started.
+  argvs         => Required. Array of arguments the program received.
+  sha256hashes  => Optional. See below.
+  invocations   => Optional. See below. 
+}
+----
+
+==== $sha256hashes
+This hash contains the sha256 hashes for all files used in the assessment.
+----
+{
+  /path/to/file1 => SHA256 VALUE FOR FILE1,
+  /path/to/file2 => SHA256 VALUE FOR FILE2,
+  ...
+}
+----
+
+==== $invocations
+summary contains the information related to the invocation(s) of the tool
+----
+{
+  $id => {
+    commandLine           => COMMAND_LINE_VALUE,
+    startTime             => INVOCATION_START_TIME,
+    endTime               => INVOCATION_END_TIME,
+    workingDirectory      => WORKING_DIRECTORY,
+    exitCode              => EXIT_CODE_VALUE,
+    args => [
+      'ARG1', 'ARG2', ...  # ARGUMENTS
+    ], 
+    env => {               # ENVIRONMENT_VARIABLES
+      'key1' => 'value1',
+      'key2' => 'value2',
+      ...
+    }
+  },
+  ...
+}
+----
+
+==== $initialData
+initialData contains information regarding the assessment.
+----
+{
+  build_root_dir     => PACKAGE_DIRECTORY,
+  package_root_dir   => DIRECTORY_CONTAINING_PACKAGE,
+  uuid               => UUIDVALUE,
+  tool_name          => TOOL_NAME,
+  tool_version       => TOOL_VERSION,
+  package_name       => PACKAGE_NAME,
+  package_version    => PACKAGE_VERSION
+}
+----
+
+==== $bugData
+Each bugData hash contains information on one bug instance.
+----
+{
+  BugGroup              => GROUP_VALUE,
+  BugCode               => CODE_VALUE,
+  BugMessage            => BUG_MESSAGE_VALUE,
+  BugLocations  => [
+    SourceFile          => SOURCE_FILE_NAME,
+    StartLine           => START_LINE,
+    EndLine             => END_LINE,
+    StartColumn         => START_COLUMN,
+    EndColumn           => END_COLUMN,
+    primary             => PRIMARY_VALUE,
+    Explanation         => EXPLANATION_VALUE
+  ],
+  AssessmentReportFile  => ASSESSMENT_REPORT_FILE_NAME,
+  ClassName             => CLASS_NAME_VALUE,
+  Methods => [
+    name                => METHODNAMEVALUE,
+  ],
+  BugSeverity           => SEVERITY_VALUE,
+  CweIds => [
+    CWEIDVALUE, CWEIDVALUE, ...
+  ],
+}
+----

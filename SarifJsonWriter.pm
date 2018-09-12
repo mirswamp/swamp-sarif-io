@@ -2,10 +2,13 @@
 
 package SarifJsonWriter;
 use JSON::Streaming::Writer;
-use Data::Dumper;
 use Cwd;
 use strict;
 
+my $sarifVersion = "2.0.0";
+my $sarifSchema = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema.json";
+
+# Instantiates the writer and store some data for later use
 sub new {
     my ($class, $parameters) = @_;
 
@@ -13,358 +16,408 @@ sub new {
 
     my $self = {};
 
-
-    $self->{options} = $parameters->{options};
     $self->{argv} = $parameters->{argvs};
-    if ($parameters->{summary}) {
-        $self->{assessment_summary} = $parameters->{summary};
+    if ($parameters->{buildDir}) {
+        $self->{buildDir} = $parameters->{buildDir};
     }
-    $self->{sha256hashes} = $parameters->{sha256hashes};
-    $self->{startTime} = $parameters->{startTime};
+    if ($parameters->{invocations}) {
+        $self->{invocations} = $parameters->{invocations};
+    }
+    if ($parameters->{sha256hashes}) {
+        $self->{sha256hashes} = $parameters->{sha256hashes};
+    }
+    $self->{startTime} = ConvertEpoch($parameters->{startTime});
 
     $self->{fh} = $fh;
     $self->{writer} = JSON::Streaming::Writer->for_stream($fh);
     $self->{writer}->pretty_output($parameters->{pretty});
 
-    $self->{writer}->start_object();
-    $self->{writer}->add_property("version", "2.0.0");
-    $self->{writer}->start_property("runs");
-    $self->{writer}->start_array();
-
-    $self->{counter} = 0;
-
     bless $self, $class;
     return $self;
 }
 
+# Start writing initial data to the sarif file and save some data for later use
 sub AddStartTag {
-    my ($self, $initialHash) = @_;
+    my ($self, $initialData) = @_;
+    my $writer = $self->{writer};
 
-    $self->{tool_name} = $initialHash->{name};
-    $self->{tool_version} = $initialHash->{version};
+    $writer->start_object(); # Start sarif object
+    $writer->add_property("version", $sarifVersion);
+    $writer->add_property("\$schema", $sarifSchema);
+    $writer->start_property("runs");
+    $writer->start_array();
 
-    my $path = AdjustPath(".", $initialHash->{uriBaseId}, $initialHash->{package_root_dir});
+    my $path = AdjustPath(".", $initialData->{build_root_dir}, $initialData->{package_root_dir});
     $path = "file://".$path;
 
     $self->{root} = $path;
-    $self->{uriBaseId} = $initialHash->{uriBaseId};
-    $self->{package_root_dir} = $initialHash->{package_root_dir};
+    $self->{uriBaseId} = $initialData->{build_root_dir};
+    $self->{package_root_dir} = $initialData->{package_root_dir};
 
     # start new run object
-    $self->{writer}->start_object();
+    $writer->start_object();
 
-    $self->{writer}->add_property("instanceGuid", $initialHash->{instanceGuid});
-    $self->{writer}->start_property("tool");
-    $self->{writer}->start_object();
-    $self->{writer}->add_property("name", $initialHash->{tool_name});
-    $self->{writer}->add_property("version", $initialHash->{tool_version});
-    $self->{writer}->end_object();
-    $self->{writer}->end_property();
+    $writer->add_property("instanceGuid", $initialData->{uuid});
+    $writer->start_property("tool");
+    $writer->start_object();
+    $writer->add_property("name", $initialData->{tool_name});
+    $writer->add_property("version", $initialData->{tool_version});
+    $writer->end_object();
+    $writer->end_property();
 
-    $self->{writer}->start_property("originalUriBaseIds");
-    $self->{writer}->start_object();
-    $self->{writer}->add_property("PKGROOT", $self->{root});
-    $self->{writer}->end_object();
-    $self->{writer}->end_property();
+    $writer->start_property("originalUriBaseIds");
+    $writer->start_object();
+    $writer->add_property("PKGROOT", $self->{root});
+    $writer->end_object();
+    $writer->end_property();
+
+    $writer->start_property("properties");
+    $writer->start_object();
+    $writer->add_property("packageName", $initialData->{package_name});
+    $writer->add_property("packageVersion", $initialData->{package_version});
+    $writer->end_object();
+    $writer->end_property();
 
     # Data from assessment summary
-    if ($self->{options}{summary}) {
-        $self->{writer}->start_property("invocations");
-        $self->{writer}->start_array();
+    my $invocations = $self->{invocations};
+    if ($invocations) {
+        $writer->start_property("invocations");
+        $writer->start_array();
 
-        foreach my $id (keys %{$self->{assessment_summary}}) {
-            $self->{writer}->start_object();
-            $self->{writer}->add_property("commandLine", $self->{assessment_summary}{$id}{commandLine});
+        foreach my $id (keys %{$invocations}) {
+            $writer->start_object();
+            CheckAndAddInvocation($self, "commandLine", $invocations->{$id}{commandLine});
 
-            $self->{writer}->start_property("arguments");
-            $self->{writer}->start_array();
-            foreach my $arg (@{$self->{assessment_summary}{$id}{args}}) {
-                $self->{writer}->add_string($arg);
+            if (@{$invocations->{$id}{args}} > 1) {
+                $writer->start_property("arguments");
+                $writer->start_array();
+                foreach my $arg (@{$invocations->{$id}{args}}) {
+                    $writer->add_string($arg);
+                    }
+                    $writer->end_array();
+                    $writer->end_property();
             }
-            $self->{writer}->end_array();
-            $self->{writer}->end_property();
 
-            $self->{writer}->add_property("startTime", $self->{assessment_summary}{$id}{startTime});
-            $self->{writer}->add_property("endTime", $self->{assessment_summary}{$id}{endTime});
-            $self->{writer}->add_property("workingDirectory", $self->{assessment_summary}{$id}{workingDirectory});
+            CheckAndAddInvocation($self, "startTime", $invocations->{$id}{startTime});
+            CheckAndAddInvocation($self, "endTime", $invocations->{$id}{endTime});
+            CheckAndAddInvocation($self, "workingDirectory", $invocations->{$id}{workingDirectory});
 
-            $self->{writer}->start_property("environmentVariables");
-            $self->{writer}->start_object();
-            foreach my $key (keys %{$self->{assessment_summary}{$id}{env}}) {
-                my $value = $self->{assessment_summary}{$id}{env}{$key};
-                $self->{writer}->add_property($key, $value);
+            if (defined $invocations->{$id}{env}) {
+                $writer->start_property("environmentVariables");
+                $writer->start_object();
+                foreach my $key (keys %{$invocations->{$id}{env}}) {
+                    my $value = $invocations->{$id}{env}{$key};
+                    $writer->add_property($key, $value);
+                }
+                $writer->end_object();
+                $writer->end_property();
             }
-            $self->{writer}->end_object();
-            $self->{writer}->end_property();
 
-            $self->{writer}->add_property("exitCode", MakeInt($self->{assessment_summary}{$id}{exitCode}));
+            CheckAndAddInvocation($self, "exitCode", $invocations->{$id}{exitCode});
 
-            $self->{writer}->end_object();
+            $writer->end_object();
         }
 
-        $self->{writer}->end_array();
-        $self->{writer}->end_property();
+        $writer->end_array();
+        $writer->end_property();
     }
 
-    # Open results
-    $self->{writer}->start_property("results");
-    $self->{writer}->start_array();
+    # Open results object
+    $writer->start_property("results");
+    $writer->start_array();
 }
 
+# Called when data for a bug instance is gathered.
+# Writes out a result object, saves some data related to the bug
+# for later use.
 sub AddBugInstance {
     my ($self, $bugData) = @_;
+    my $writer = $self->{writer};
 
-    # Add bug
-    $self->{writer}->start_object();
+    $writer->start_object();
 
-    # FIXME Program dies if BugGroup or BugCode contains a "/"
-    if ($bugData->{BugGroup} =~ m/\// or $bugData->{BugCode} =~ m/\//) {
-        die "BugGroup or BugCode contains a \"/\": $!";
-    }
-    $self->{writer}->add_property("ruleId", $bugData->{BugGroup}."/".$bugData->{BugCode});
+    my @ruleId = ();
+    push @ruleId, $bugData->{BugGroup} if $bugData->{BugGroup};
+    push @ruleId, $bugData->{BugCode} if $bugData->{BugCode};
+    $writer->add_property("ruleId", join('/', @ruleId));
+    die "SCARF file has no BugGroup nor BugCode: $!" if @ruleId == 0;
+
+    $writer->add_property("level", "warning");
 
     my $message = $bugData->{BugMessage};
-    # FIXME Regex to correctly deal with end of lines
-    #$message =~ s/\n\nBug Path:\s*\n\n.*\Z//s;
     $message =~ s/\n\n Bug\ Path:\s* $ $ .*\Z//xms;
-    $self->{writer}->start_property("message");
-    $self->{writer}->start_object();
-    $self->{writer}->add_property("text", $message);
-    $self->{writer}->end_object();
-    $self->{writer}->end_property();
+    $writer->start_property("message");
+    $writer->start_object();
+    $writer->add_property("text", $message);
+    $writer->end_object();
+    $writer->end_property();
 
-    $self->{writer}->start_property("locations");
-    $self->{writer}->start_array();
-    if ($self->{counter} == 8649) {
-        #print Dumper($bugData->{BugLocations});
-    } else {
-        $self->{counter} += 1;
-    }
-        
-    foreach my $location (@{$bugData->{BugLocations}}) {
-        if ($location->{primary}) {
-            $self->{writer}->start_object();
-            $self->{writer}->start_property("physicalLocation");
-            $self->{writer}->start_object();
-            $self->{writer}->start_property("fileLocation");
-            $self->{writer}->start_object();
-            my $filename = AdjustPath($self->{package_root_dir}, ".", $location->{SourceFile});
-            $self->{writer}->add_property("uri", $filename);
-            $self->{writer}->add_property("uriBaseId", "PKGROOT");
-            $self->{writer}->end_object();
-            $self->{writer}->end_property();
+    my $numLocations = @{$bugData->{BugLocations}};
+    if ($numLocations > 0) {
+        $writer->start_property("locations");
+        $writer->start_array();
 
-            if ((exists $location->{StartLine}) || (exists $location->{EndLine}) ||
+        foreach my $location (@{$bugData->{BugLocations}}) {
+            if ($location->{primary}) {
+                $writer->start_object();
+                $writer->start_property("physicalLocation");
+                $writer->start_object();
+                $writer->start_property("fileLocation");
+                $writer->start_object();
+                my $filename = AdjustPath($self->{package_root_dir}, ".", $location->{SourceFile});
+                $writer->add_property("uri", $filename);
+                $writer->add_property("uriBaseId", "PKGROOT");
+                $writer->end_object();
+                $writer->end_property();
+
+                if ((exists $location->{StartLine}) || (exists $location->{EndLine}) ||
                     (exists $location->{StartColumn}) || (exists $location->{EndColumn})) {
-                $self->{writer}->start_property("region");
-                $self->{writer}->start_object();
-                
-                if (exists $location->{StartLine}) {
-                    $self->{writer}->add_property("startLine", MakeInt($location->{StartLine}));
-                }
-                if (exists $location->{EndLine}) {
-                    $self->{writer}->add_property("endLine", MakeInt($location->{EndLine}));
-                }
-                if (exists $location->{StartColumn}) {
-                    $self->{writer}->add_property("startColumn", MakeInt($location->{StartColumn}));
-                }
-                if (exists $location->{EndColumn}) {
-                    $self->{writer}->add_property("endColumn", MakeInt($location->{EndColumn}));
-                }
-                
-                if ((!exists $location->{StartLine}) || (!exists $location->{EndLine})) {
-                    die "start/end line doesn't exist in $location->{SourceFile}";
-                }
+                    $writer->start_property("region");
+                    $writer->start_object();
 
-                # pass file path to FindSha256Hash function to check for existence of file
-                my $hashName = "build/".$location->{SourceFile};
-                my $exists = FindSha256Hash($self->{sha256hashes}, $hashName);
-                if ($self->{options}{build} and defined $exists) {
-                    my $name = $self->{options}{build}.$location->{SourceFile};
-                    open (my $file, '<', $name) or die "Can't open $name: $!";
-
-                    my $count = 1;
-                    my $snippetString = "";
-                    while(<$file>) {
-                        if ($count > $location->{EndLine}) {
-                            #print "$count: $snippetString\n-------------------------\n";
-                            $self->{writer}->start_property("snippet");
-                            $self->{writer}->start_object();
-                            $self->{writer}->add_property("text", $snippetString);
-                            $self->{writer}->end_object();
-                            $self->{writer}->end_property();
-                            close $file;
-                            last;
-                        }
-                        if ($count >= $location->{StartLine}) {
-                            $snippetString = $snippetString.$_;
-                        }
-                        $count++;
+                    if (exists $location->{StartLine}) {
+                        $writer->add_property("startLine", MakeInt($location->{StartLine}));
                     }
+                    if (exists $location->{EndLine}) {
+                        $writer->add_property("endLine", MakeInt($location->{EndLine}));
+                    }
+                    if (exists $location->{StartColumn}) {
+                        $writer->add_property("startColumn", MakeInt($location->{StartColumn}));
+                    }
+                    if (exists $location->{EndColumn}) {
+                        $writer->add_property("endColumn", MakeInt($location->{EndColumn}));
+                    }
+
+                    if ((!exists $location->{StartLine}) || (!exists $location->{EndLine})) {
+                        die "start/end line doesn't exist in $location->{SourceFile}";
+                    }
+
+                    my $snippetFile = $self->{buildDir}.$location->{SourceFile};
+                    if (-r $snippetFile) {
+                        open (my $snippetFh, '<', $snippetFile) or die "Can't open $snippetFile: $!";
+
+                        my $count = 1;
+                        my $snippetString = "";
+                        while(<$snippetFh>) {
+                            if ($count > $location->{EndLine}) {
+                                $writer->start_property("snippet");
+                                $writer->start_object();
+                                $writer->add_property("text", $snippetString);
+                                $writer->end_object();
+                                $writer->end_property();
+                                close $snippetFh;
+                                last;
+                            }
+                            if ($count >= $location->{StartLine}) {
+                                $snippetString = $snippetString.$_;
+                            }
+                            $count++;
+                        }
+                    } else {
+                        print STDERR "Unable to find $snippetFile\n";
+                    }
+
+                    $writer->end_object();
+                    $writer->end_property();
                 }
-                
-                $self->{writer}->end_object();
-                $self->{writer}->end_property();
+
+                $writer->end_object();
+                $writer->end_property();
+
+                if (defined $location->{Explanation}) {
+                    $writer->start_property("message");
+                    $writer->start_object();
+                    $writer->add_property("text", $location->{Explanation});
+                    $writer->end_object();
+                    $writer->end_property();
+                }
+
+                $writer->end_object();
+
+                # Store file uri to hash
+                $self->{files}{$location->{SourceFile}} = 1;
             }
-
-            $self->{writer}->end_object();
-            $self->{writer}->end_property();
-
-            if (defined $location->{Explanation}) {
-                $self->{writer}->start_property("message");
-                $self->{writer}->start_object();
-                $self->{writer}->add_property("text", $location->{Explanation});
-                $self->{writer}->end_object();
-                $self->{writer}->end_property();
-            }
-
-            $self->{writer}->end_object();
-
-            # Add file uri to hash
-            $self->{files}{$location->{SourceFile}} = 1;
         }
+        $writer->end_array();
+        $writer->end_property();
     }
-    $self->{writer}->end_array();
-    $self->{writer}->end_property();
 
-    $self->{writer}->start_property("conversionProvenance");
-    $self->{writer}->start_array();
-    $self->{writer}->start_object();
-    $self->{writer}->start_property("fileLocation");
-    $self->{writer}->start_object();
-    $self->{writer}->add_property("uri", $bugData->{AssessmentReportFile});
-    $self->{writer}->end_object();
-    $self->{writer}->end_property();
-    $self->{writer}->end_object();
-    $self->{writer}->end_array();
-    $self->{writer}->end_property();
+    $writer->start_property("conversionProvenance");
+    $writer->start_array();
+    $writer->start_object();
+    $writer->start_property("fileLocation");
+    $writer->start_object();
+    $writer->add_property("uri", $bugData->{AssessmentReportFile});
+    $writer->end_object();
+    $writer->end_property();
+    $writer->end_object();
+    $writer->end_array();
+    $writer->end_property();
 
     # Add CodeFlows object
     if (@{$bugData->{BugLocations}} > 1) {
-        $self->{writer}->start_property("codeFlows");
-        $self->{writer}->start_array();
-        $self->{writer}->start_object();
-        $self->{writer}->start_property("threadFlows");
-        $self->{writer}->start_array();
-        $self->{writer}->start_object();
-        $self->{writer}->start_property("locations");
-        $self->{writer}->start_array();
+        $writer->start_property("codeFlows");
+        $writer->start_array();
+        $writer->start_object();
+        $writer->start_property("threadFlows");
+        $writer->start_array();
+        $writer->start_object();
+        $writer->start_property("locations");
+        $writer->start_array();
         AddThreadFlowsLocations($self, $bugData->{BugLocations});
-        $self->{writer}->end_array();
-        $self->{writer}->end_property();
-        $self->{writer}->end_object();
-        $self->{writer}->end_array();
-        $self->{writer}->end_property();
-        $self->{writer}->end_object();
-        $self->{writer}->end_array();
-        $self->{writer}->end_property();
+        $writer->end_array();
+        $writer->end_property();
+        $writer->end_object();
+        $writer->end_array();
+        $writer->end_property();
+        $writer->end_object();
+        $writer->end_array();
+        $writer->end_property();
     }
 
+    # Save ClassName
     if (defined $bugData->{ClassName}) {
         $self->{ClassNames}{$bugData->{ClassName}} = 1;
     }
 
+    # Save all method names
     foreach my $method (@{$bugData->{Methods}}) {
         $self->{Methods}{$method->{name}} = 1;
     }
 
-    if (defined $bugData->{InstanceLocation}{Xpath}) {
-        $self->{writer}->start_property("properties");
-        $self->{writer}->start_object();
-        $self->{writer}->add_property("Xpath", $bugData->{InstanceLocation}{Xpath});
-        $self->{writer}->end_object();
-        $self->{writer}->end_property();
+    # Write data to property bad object
+    if ($bugData->{BugSeverity} || $bugData->{CweIds}) {
+        $writer->start_property("properties");
+        $writer->start_object();
+
+        if ($bugData->{BugSeverity}) {
+            $writer->add_property("toolSeverity", $bugData->{BugSeverity});
+        }
+
+        if (@{$bugData->{CweIds}} > 0) {
+            $writer->start_property("tags");
+            $writer->start_array();
+            foreach my $cweId (@{$bugData->{CweIds}}) {
+                $writer->add_string("CWE/".$cweId);
+            }
+            $writer->end_array();
+            $writer->end_property();
+        }
+
+        $writer->end_object();
+        $writer->end_property();
     }
 
-    $self->{writer}->end_object();
+    $writer->end_object();
 
 }
 
+# Closes results array, write data saved from AddBugInstance()
+# and finishes writing the SARIF file
 sub Close {
     my ($self) = @_;
+    my $writer = $self->{writer};
 
-    # end run object
-    $self->{writer}->end_array();
-    $self->{writer}->end_property();
+    $writer->end_array();
+    $writer->end_property();
     AddLogicalLocations($self);
     AddFilesObject($self);
     AddConversionObject($self);
-    $self->{writer}->end_object();
+    $writer->end_object();
 
-    $self->{writer}->end_array();
-    $self->{writer}->end_property();
-    $self->{writer}->end_object;
+    $writer->end_array();
+    $writer->end_property();
+    $writer->end_object;
     close $self->{fh};
 }
 
-sub AddLogicalLocations {
-    my ($self) = @_;
+sub CheckAndAddInvocation {
+    my ($self, $propertyName, $propertyValue) = @_;
 
-    if ($self->{ClassNames} || $self->{Methods}) {
-        $self->{writer}->start_property("logicalLocations");
-        $self->{writer}->start_object();
-
-        foreach my $className (keys %{$self->{ClassNames}}) {
-            $self->{writer}->start_property($className);
-            $self->{writer}->start_object();
-            $self->{writer}->add_property("name", $className);
-            $self->{writer}->add_property("kind", "type");
-            $self->{writer}->end_object();
-            $self->{writer}->end_property();
+    if (defined $propertyValue) {
+        if ($propertyName eq "exitCode") {
+            $self->{writer}->add_property($propertyName, MakeInt($propertyValue));
+        } else {
+            $self->{writer}->add_property($propertyName, $propertyValue);
         }
-
-        foreach my $method (keys %{$self->{Methods}}) {
-            $self->{writer}->start_property($method);
-            $self->{writer}->start_object();
-            $self->{writer}->add_property("name", $method);
-            $self->{writer}->add_property("kind", "function");
-            $self->{writer}->end_object();
-            $self->{writer}->end_property();
-        }
-
-        $self->{writer}->end_object();
-        $self->{writer}->end_property();
     }
 }
 
+# Helper function to write the logicalLocations object
+sub AddLogicalLocations {
+    my ($self) = @_;
+    my $writer = $self->{writer};
+
+    if ($self->{ClassNames} || $self->{Methods}) {
+        $writer->start_property("logicalLocations");
+        $writer->start_object();
+
+        foreach my $className (keys %{$self->{ClassNames}}) {
+            $writer->start_property($className);
+            $writer->start_object();
+            $writer->add_property("name", $className);
+            $writer->add_property("kind", "type");
+            $writer->end_object();
+            $writer->end_property();
+        }
+
+        foreach my $method (keys %{$self->{Methods}}) {
+            $writer->start_property($method);
+            $writer->start_object();
+            $writer->add_property("name", $method);
+            $writer->add_property("kind", "function");
+            $writer->end_object();
+            $writer->end_property();
+        }
+
+        $writer->end_object();
+        $writer->end_property();
+    }
+}
+
+# Helper function to write the Files object
 sub AddFilesObject {
     my ($self) = @_;
+    my $writer = $self->{writer};
 
-    $self->{writer}->start_property("files");
-    $self->{writer}->start_object();
+    $writer->start_property("files");
+    $writer->start_object();
     foreach my $file (keys %{$self->{files}}) {
         my $filename = AdjustPath($self->{package_root_dir}, ".", $file);
         my $hashPath = "build/".$file;
 
-        $self->{writer}->start_property($filename);
-        $self->{writer}->start_object();
+        $writer->start_property($filename);
+        $writer->start_object();
 
-        if ($self->{options}{hashes}) {
+        if ($self->{sha256hashes}) {
             my $sha256 = FindSha256Hash($self->{sha256hashes}, $hashPath);
             if (defined $sha256) {
-                $self->{writer}->start_property("hashes");
-                $self->{writer}->start_array();
-                $self->{writer}->start_object();
-                $self->{writer}->add_property("algorithm", "sha-256");
-                $self->{writer}->add_property("value", $sha256);
-                $self->{writer}->end_object();
-                $self->{writer}->end_array();
-                $self->{writer}->end_property();
+                $writer->start_property("hashes");
+                $writer->start_array();
+                $writer->start_object();
+                $writer->add_property("algorithm", "sha-256");
+                $writer->add_property("value", $sha256);
+                $writer->end_object();
+                $writer->end_array();
+                $writer->end_property();
             } else {
                 print "Unable to find sha256 hash for $file\n";
-                #die "Unable to find sha256 hash for $file";
             }
         }
         
-        $self->{writer}->end_object();
-        $self->{writer}->end_property();
+        $writer->end_object();
+        $writer->end_property();
     }
-    $self->{writer}->end_object();
-    $self->{writer}->end_property();
+    $writer->end_object();
+    $writer->end_property();
 
     undef %{$self->{files}};
 }
 
+# Helper function to find the sha256 hash for a file
+# Parameters:
+# sha256   -> hash containing the key(filename) and value(sha256 hash) pair
+# filename -> the path of the file including its name
 sub FindSha256Hash {
     my ($sha256, $filename) = @_;
 
@@ -374,109 +427,112 @@ sub FindSha256Hash {
     return $sha256->{$filename};
 }
 
+# Helper function to write the conversion object
 sub AddConversionObject {
     my ($self) = @_;
+    my $writer = $self->{writer};
     
-    $self->{writer}->start_property("conversion");
-    $self->{writer}->start_object();
-    $self->{writer}->start_property("tool");
-    $self->{writer}->start_object();
-    $self->{writer}->add_property("name", "SWAMP SARIF Translator");
-    $self->{writer}->add_property("version", "0.0.1");
-    $self->{writer}->end_object();
-    $self->{writer}->end_property();
+    $writer->start_property("conversion");
+    $writer->start_object();
+    $writer->start_property("tool");
+    $writer->start_object();
+    $writer->add_property("name", "SWAMP SARIF Translator");
+    $writer->add_property("version", "0.0.1");
+    $writer->end_object();
+    $writer->end_property();
     
-    $self->{writer}->start_property("invocation");
+    $writer->start_property("invocation");
     
-    $self->{writer}->start_object();
-    $self->{writer}->add_property("commandLine", $0);
+    $writer->start_object();
+    $writer->add_property("commandLine", $0);
     
-    $self->{writer}->start_property("arguments");
-    $self->{writer}->start_array();
+    $writer->start_property("arguments");
+    $writer->start_array();
     foreach my $arg (@{$self->{argv}}) {
-        $self->{writer}->add_string($arg);
+        $writer->add_string($arg);
     }
-    $self->{writer}->end_array();
-    $self->{writer}->end_property();
-    $self->{writer}->add_property("startTime", $self->{startTime});
-    $self->{writer}->add_property("endTime", ConvertEpoch(time()));
-    $self->{writer}->add_property("workingDirectory", getcwd());
-    $self->{writer}->start_property("environmentVariables");
-    $self->{writer}->start_object();
-    #foreach (sort keys %ENV) {
-        #self->{writer}->add_property($_, $ENV{$_});
-        $self->{writer}->add_property("TestKey", "TestValue"); # DELETE THIS
-        #}
-    $self->{writer}->end_object();
-    $self->{writer}->end_property();
-    $self->{writer}->add_property("exitCode", 0); # MIGHT NOT BE 0?
+    $writer->end_array();
+    $writer->end_property();
+    $writer->add_property("workingDirectory", getcwd());
+    $writer->start_property("environmentVariables");
+    $writer->start_object();
+    foreach (sort keys %ENV) {
+        $writer->add_property($_, $ENV{$_});
+    }
+    $writer->end_object();
+    $writer->end_property();
+    $writer->add_property("exitCode", 0);
+    $writer->add_property("startTime", $self->{startTime});
+    $writer->add_property("endTime", ConvertEpoch(time()));
+   
+    $writer->end_object();
+    $writer->end_property(); # end invocation
     
-    $self->{writer}->end_object();
-    $self->{writer}->end_property(); # end invocation
-    
-    $self->{writer}->end_object();
-    $self->{writer}->end_property();
+    $writer->end_object();
+    $writer->end_property();
 }   
 
+# Helper function to write the threadFLowLocations object
 sub AddThreadFlowsLocations {
     my ($self, $locations) = @_;
-    foreach my $location (@{$locations}) {
-        $self->{writer}->start_object();
+    my $writer = $self->{writer};
 
-        $self->{writer}->start_property("location");
-        $self->{writer}->start_object();
-        $self->{writer}->start_property("physicalLocation");
-        $self->{writer}->start_object();
-        $self->{writer}->start_property("fileLocation");
-        $self->{writer}->start_object();
+    foreach my $location (@{$locations}) {
+        $writer->start_object();
+
+        $writer->add_property("importance", "essential");
+        $writer->start_property("location");
+        $writer->start_object();
+        $writer->start_property("physicalLocation");
+        $writer->start_object();
+        $writer->start_property("fileLocation");
+        $writer->start_object();
         my $filename = AdjustPath($self->{package_root_dir}, ".", $location->{SourceFile});
-        $self->{writer}->add_property("uri", $filename);
-        $self->{writer}->add_property("uriBaseId", "PKGROOT");
-        $self->{writer}->end_object();
-        $self->{writer}->end_property();
+        $writer->add_property("uri", $filename);
+        $writer->add_property("uriBaseId", "PKGROOT");
+        $writer->end_object();
+        $writer->end_property();
 
         if ((exists $location->{StartLine}) || (exists $location->{EndLine}) ||
             (exists $location->{StartColumn}) || (exists $location->{EndColumn})) {
-            $self->{writer}->start_property("region");
-            $self->{writer}->start_object();
+            $writer->start_property("region");
+            $writer->start_object();
             if (exists $location->{StartLine}) {
-                $self->{writer}->add_property("startLine", MakeInt($location->{StartLine}));
+                $writer->add_property("startLine", MakeInt($location->{StartLine}));
             }
             if (exists $location->{EndLine}) {
-                $self->{writer}->add_property("endLine", MakeInt($location->{EndLine}));
+                $writer->add_property("endLine", MakeInt($location->{EndLine}));
             }
             if (exists $location->{StartColumn}) {
-                $self->{writer}->add_property("startColumn", MakeInt($location->{StartColumn}));
+                $writer->add_property("startColumn", MakeInt($location->{StartColumn}));
             }
             if (exists $location->{EndColumn}) {
-                $self->{writer}->add_property("endColumn", MakeInt($location->{EndColumn}));
+                $writer->add_property("endColumn", MakeInt($location->{EndColumn}));
             }
-            $self->{writer}->end_object();
-            $self->{writer}->end_property();
+            $writer->end_object();
+            $writer->end_property();
         }
 
-        $self->{writer}->end_object();
-        $self->{writer}->end_property(); # end physicalLocation
+        $writer->end_object();
+        $writer->end_property(); # end physicalLocation
 
         if (defined $location->{Explanation}) {
-            $self->{writer}->start_property("message");
-            $self->{writer}->start_object();
-            $self->{writer}->add_property("text", $location->{Explanation});
-            $self->{writer}->end_object();
-            $self->{writer}->end_property();
+            $writer->start_property("message");
+            $writer->start_object();
+            $writer->add_property("text", $location->{Explanation});
+            $writer->end_object();
+            $writer->end_property();
         }
 
-        $self->{writer}->end_object();
-        $self->{writer}->end_property(); # end location
+        $writer->end_object();
+        $writer->end_property(); # end location
 
-        $self->{writer}->end_object();
+        $writer->end_object();
     }
 }
 
-# 
 # NormalizePath - take a path and remove empty and '.' directory components
 #                 empty directories become '.'
-#
 sub NormalizePath {
     my $p = shift;
 
@@ -490,14 +546,12 @@ sub NormalizePath {
     return $p;
 }
 
-# 
 # AdjustPath - take a path that is relative to curDir and make it relative
 #              to baseDir.  If the path is not in baseDir, do not modify.
 #
 #       baseDir    - the directory to make paths relative to
 #       curDir     - the directory paths are currently relative to
 #       path       - the path to change
-#
 sub AdjustPath {
     my ($baseDir, $curDir, $path) = @_;
 
@@ -549,15 +603,13 @@ sub ConvertEpoch {
     }
 
     if ($fraction) {
-        return "$year-$month-$day"."T"."$hour:$min:$sec.$fraction" . "Z";
+        return sprintf("%d-%02d-%02d%s%02d:%02d:%02d.%s%s", $year, $month, $day, "T", $hour, $min, $sec, $fraction, "Z");
     } else {
-        return "$year-$month-$day"."T"."$hour:$min:$sec" . "Z";
+        return sprintf("%d-%02d-%02d%s%02d:%02d:%02d%s", $year, $month, $day, "T", $hour, $min, $sec, "Z");
     }
 }
 
-#
-# Makes a string of integer into integer
-#
+# Make the integer that is in a string into integer
 sub MakeInt {
     my ($var) = @_;
 
