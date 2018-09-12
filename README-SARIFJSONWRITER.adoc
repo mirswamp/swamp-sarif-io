@@ -33,7 +33,7 @@ The following Perl libraries should be installed for the program to work correct
 
 === Subroutines
 
-==== new($parameters)
+==== new($arguments)
 This is the subroutine used to instantiate the writer. This subroutine expects one parameter, which is a hash with a data structure described below.
 
 ==== AddStartTag($initialData)
@@ -48,7 +48,7 @@ This subroutine should be called after all BugInstances are read, which is after
 === Data Structures
 The following are the data structures used in the callbacks listed above:
 
-==== $parameters
+==== $arguments
 ----
 {
   filename      => Required. File name of the output sarif file. 
@@ -115,18 +115,24 @@ Each bugData hash contains information on one bug instance.
   BugCode               => CODE_VALUE,
   BugMessage            => BUG_MESSAGE_VALUE,
   BugLocations  => [
-    SourceFile          => SOURCE_FILE_NAME,
-    StartLine           => START_LINE,
-    EndLine             => END_LINE,
-    StartColumn         => START_COLUMN,
-    EndColumn           => END_COLUMN,
-    primary             => PRIMARY_VALUE,
-    Explanation         => EXPLANATION_VALUE
+    {
+      SourceFile        => SOURCE_FILE_NAME,
+      StartLine         => START_LINE,
+      EndLine           => END_LINE,
+      StartColumn       => START_COLUMN,
+      EndColumn         => END_COLUMN,
+      primary           => PRIMARY_VALUE,
+      Explanation       => EXPLANATION_VALUE
+    },
+    ...
   ],
   AssessmentReportFile  => ASSESSMENT_REPORT_FILE_NAME,
   ClassName             => CLASS_NAME_VALUE,
   Methods => [
-    name                => METHODNAMEVALUE,
+    {
+      name              => METHODNAMEVALUE,
+    },
+    ...
   ],
   BugSeverity           => SEVERITY_VALUE,
   CweIds => [
