@@ -1,45 +1,114 @@
 #!/usr/bin/perl -w
 
 package SarifJsonWriter;
-use JSON::Streaming::Writer;
-use Cwd;
 use strict;
+use JSON::Streaming::Writer;
+use Data::Dumper;
+use Exporter 'import';
+our @EXPORT_OK = qw(CheckStart CheckBug);
 
 my $sarifVersion = "2.0.0";
 my $sarifSchema = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema.json";
 
 # Instantiates the writer and store some data for later use
 sub new {
-    my ($class, $parameters) = @_;
+    my ($class, $output, $encoding) = @_;
 
-    open(my $fh, '>:encoding(UTF-8)', $parameters->{filename}) or die "Can't open $parameters->{filename}: $!";
+    if ($encoding ne "utf-8") {
+        die "Only utf-8 encoding is supported: $!"
+    }
+
+    open(my $fh, '>:encoding(UTF-8)', $output) or die "Can't open $output: $!";
 
     my $self = {};
 
-    $self->{argv} = $parameters->{argvs};
-    if ($parameters->{buildDir}) {
-        $self->{buildDir} = $parameters->{buildDir};
-    }
-    if ($parameters->{invocations}) {
-        $self->{invocations} = $parameters->{invocations};
-    }
-    if ($parameters->{sha256hashes}) {
-        $self->{sha256hashes} = $parameters->{sha256hashes};
-    }
-    $self->{startTime} = ConvertEpoch($parameters->{startTime});
-
+    $self->{pretty} = 0;
+    $self->{error_level} = 2;
     $self->{fh} = $fh;
     $self->{writer} = JSON::Streaming::Writer->for_stream($fh);
-    $self->{writer}->pretty_output($parameters->{pretty});
+    $self->{writer}->pretty_output($self->{pretty});
 
     bless $self, $class;
     return $self;
+}
+
+# Set whether the writer pretty prints (meaning add indentation)
+sub SetPretty {
+    my ($self, $value) = @_;
+
+    $self->{pretty} = $value;
+    $self->{writer}->pretty_output($self->{pretty});
+}
+
+# Returns a boolean that shows whether the writer currently pretty prints
+sub GetPretty {
+    my ($self) = @_;
+
+    return $self->{pretty};
+}
+
+# Set how program handle errors
+sub SetErrorLevel {
+    my ($self, $error_level) = @_;
+
+    if (defined $error_level) {
+        if ($error_level == 0 || $error_level == 1 || $error_level == 2) {
+            $self->{error_level} = $error_level;
+        }
+    }
+}
+
+# Get the value of error_level
+sub GetErrorLevel {
+    my ($self) = @_;
+
+    return $self->{error_level};
+}
+
+sub CheckStart {
+    my ($initialData) = @_;
+    my @errors = ();
+
+    foreach my $key (qw/ build_root_dir package_root_dir uuid tool_name
+                         tool_version package_name package_version/) {
+        if (!defined $initialData->{$key}) {
+            push @errors, "Required key $key not found in initialData";
+        }
+    }
+
+    return \@errors;
 }
 
 # Start writing initial data to the sarif file and save some data for later use
 sub AddStartTag {
     my ($self, $initialData) = @_;
     my $writer = $self->{writer};
+
+    my $errors = CheckStart($initialData);
+    if (@{$errors}) {
+        if ($self->{error_level} != 0) {
+            foreach (@{$errors}) {
+                print "$_\n";
+            }
+        }
+
+        if ($self->{error_level} == 2) {
+            die "Error with initialData hash. Program exiting."
+        }
+    }
+
+    $self->{uriBaseId} = $initialData->{build_root_dir};
+    $self->{package_root_dir} = $initialData->{package_root_dir};
+    $self->{conversion} = $initialData->{conversion};
+    if ($initialData->{sha256hashes}) {
+        $self->{sha256hashes} = $initialData->{sha256hashes};
+    }
+    if ($initialData->{invocations}) {
+        $self->{invocations} = $initialData->{invocations};
+    }
+    if ($initialData->{buildDir}) {
+        $self->{buildDir} = $initialData->{buildDir};
+    }
 
     $writer->start_object(); # Start sarif object
     $writer->add_property("version", $sarifVersion);
@@ -49,10 +118,6 @@ sub AddStartTag {
 
     my $path = AdjustPath(".", $initialData->{build_root_dir}, $initialData->{package_root_dir});
     $path = "file://".$path;
-
-    $self->{root} = $path;
-    $self->{uriBaseId} = $initialData->{build_root_dir};
-    $self->{package_root_dir} = $initialData->{package_root_dir};
 
     # start new run object
     $writer->start_object();
@@ -67,7 +132,7 @@ sub AddStartTag {
 
     $writer->start_property("originalUriBaseIds");
     $writer->start_object();
-    $writer->add_property("PKGROOT", $self->{root});
+    $writer->add_property("PKGROOT", $path);
     $writer->end_object();
     $writer->end_property();
 
@@ -127,6 +192,36 @@ sub AddStartTag {
     $writer->start_array();
 }
 
+# Check if bugInstance hash contains required fields
+sub CheckBug {
+    my ($bugInstance) = @_;
+    my @errors = ();
+
+    if (!defined $bugInstance->{BugCode} && !defined $bugInstance->{BugGroup}) {
+        push @errors, "Either BugCode or BugGroup or both must be defined";
+    }
+
+    for my $key (qw/BugMessage/) {
+        if (!defined $bugInstance->{$key}) {
+            push @errors, "Required key $key not found in bugInstance";
+        }
+    }
+
+    foreach my $location (@{$bugInstance->{BugLocations}}) {
+        if (!defined $location->{SourceFile}) {
+            push @errors, "Required key SourceFile not found in a BugLocation object";
+        }
+    }
+
+    foreach my $method (@{$bugInstance->{Methods}}) {
+        if (!defined $method->{name}) {
+            push @errors, "Required key name not found in a method object";
+        }
+    }
+
+    return \@errors;
+}
+
 # Called when data for a bug instance is gathered.
 # Writes out a result object, saves some data related to the bug
 # for later use.
@@ -134,13 +229,25 @@ sub AddBugInstance {
     my ($self, $bugData) = @_;
     my $writer = $self->{writer};
 
+    my $errors = CheckBug($bugData);
+    if (@{$errors}) {
+        if ($self->{error_level} != 0) {
+            foreach (@{$errors}) {
+                print "$_\n";
+            }
+        }
+
+        if ($self->{error_level} == 2) {
+            die "Error with bugData hash. Program exiting."
+        }
+    }
+
     $writer->start_object();
 
     my @ruleId = ();
     push @ruleId, $bugData->{BugGroup} if $bugData->{BugGroup};
     push @ruleId, $bugData->{BugCode} if $bugData->{BugCode};
     $writer->add_property("ruleId", join('/', @ruleId));
-    die "SCARF file has no BugGroup nor BugCode: $!" if @ruleId == 0;
 
     $writer->add_property("level", "warning");
 
@@ -312,6 +419,30 @@ sub AddBugInstance {
 
 }
 
+# This method is supported in ScarfXmlWriter, but is not
+# currently supported by SarifJsonWriter
+sub CheckMetric {
+
+}
+
+# This method is supported in ScarfXmlWriter, but is not
+# currently supported by SarifJsonWriter
+sub AddMetric {
+
+}
+
+# This method is supported in ScarfXmlWriter, but is not
+# currently supported by SarifJsonWriter
+sub AddSummary {
+
+}
+
+# This method is supported in ScarfXmlWriter, but is not
+# currently supported by SarifJsonWriter
+sub AddEndTag {
+
+}
+
 # Closes results array, write data saved from AddBugInstance()
 # and finishes writing the SARIF file
 sub Close {
@@ -331,6 +462,8 @@ sub Close {
     close $self->{fh};
 }
 
+# Helper function to check if a given property in invocation exists and
+# write it if it does.
 sub CheckAndAddInvocation {
     my ($self, $propertyName, $propertyValue) = @_;
 
@@ -431,38 +564,39 @@ sub FindSha256Hash {
 sub AddConversionObject {
     my ($self) = @_;
     my $writer = $self->{writer};
+    my $conversion = $self->{conversion};
     
     $writer->start_property("conversion");
     $writer->start_object();
     $writer->start_property("tool");
     $writer->start_object();
-    $writer->add_property("name", "SWAMP SARIF Translator");
-    $writer->add_property("version", "0.0.1");
+    $writer->add_property("name", $conversion->{tool_name});
+    $writer->add_property("version", $conversion->{tool_version});
     $writer->end_object();
     $writer->end_property();
     
     $writer->start_property("invocation");
     
     $writer->start_object();
-    $writer->add_property("commandLine", $0);
+    $writer->add_property("commandLine", $conversion->{commandLine});
     
     $writer->start_property("arguments");
     $writer->start_array();
-    foreach my $arg (@{$self->{argv}}) {
+    foreach my $arg (@{$conversion->{argv}}) {
         $writer->add_string($arg);
     }
     $writer->end_array();
     $writer->end_property();
-    $writer->add_property("workingDirectory", getcwd());
+    $writer->add_property("workingDirectory", $conversion->{workingDirectory});
     $writer->start_property("environmentVariables");
     $writer->start_object();
-    foreach (sort keys %ENV) {
-        $writer->add_property($_, $ENV{$_});
+    foreach my $key (keys %{$conversion->{env}}) {
+        $writer->add_property($key, $conversion->{env}{$key});
     }
     $writer->end_object();
     $writer->end_property();
     $writer->add_property("exitCode", 0);
-    $writer->add_property("startTime", $self->{startTime});
+    $writer->add_property("startTime", ConvertEpoch($conversion->{startTime}));
     $writer->add_property("endTime", ConvertEpoch(time()));
    
     $writer->end_object();

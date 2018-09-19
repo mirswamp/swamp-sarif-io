@@ -1,9 +1,9 @@
 = SWAMP SARIF IO Libraries
 
 
-Module Version: 0.0.1
+Module Version: 0.8.0
 
-Last updated on 9-11-2018
+Last updated on 9-19-2018
 
 === Name
 swamp-sarif-io - Library to write SARIF files from Perl
@@ -14,16 +14,54 @@ The https://continuousassurance.org[Software Assurance Marketplace (SWAMP)] runs
 Documentation for SCARF is available https://github.com/mirswamp/swamp-scarf-io/blob/master/docs/SCARF.pdf[here].
 Documentation for SARIF is available https://github.com/oasis-tcs/sarif-spec/tree/master/Documents/ProvisionalDrafts[here].
 
-=== SYNOPSIS
+=== Synopsis
 [source,perl]
 ----
 use SarifJsonWriter;
 
-my $writer = new SarifJsonWriter($arguments);
+my $output = "/path/to/file.sarif"
+my $writer = new SarifJsonWriter($output, "utf-8");
+
+my $defaultPretty = $writer->GetPretty();
+$writer->SetPretty(1);
+
+my $defaultErrorLevel = $writer->GetErrorLevel();
+$writer->SetErrorLevel(2);
 
 $writer->AddStartTag($initialData);
 $writer->AddBugInstance($bugData);
 $writer->Close();
+----
+
+=== Output
+Significant SARIF properties included in the generated SARIF files:
+----
+{
+  version: "...",
+  $schema: "...",
+  runs: [
+    {
+      instanceGuid: "...",
+      tool: { ... },
+      invocations: [ ... ],
+      conversion: { ... },
+      originalUriBaseIds: { ... },
+      files: [ ... ],
+      logicalLocations: { ... },
+      results: [
+        {
+          ruleId: "...",
+          level: "...",
+          message: "...",
+          locations: [ ... ], # including line, column, snippets
+          codeFlows: [ ... ],
+          conversionProvenance: { ... },
+          properties: { tags: [], ... },
+        }, ...
+      ]
+    }, ...
+  ]
+}
 ----
 
 === Requirements
@@ -48,15 +86,41 @@ This subroutine should be called after all BugInstances are read, which is after
 === Data Structures
 The following are the data structures used in the callbacks listed above:
 
-==== $arguments
+==== $initialData
+initialData contains information regarding the assessment. 
 ----
 {
-  filename      => Required. File name of the output sarif file. 
-  pretty        => Optional. 1 by default. Specifies whether the output sarif file is pretty printed.
-  startTime     => Required. The time when the program started.
-  argvs         => Required. Array of arguments the program received.
-  sha256hashes  => Optional. See below.
-  invocations   => Optional. See below. 
+  build_root_dir     => PACKAGE_DIRECTORY,            # REQUIRED
+  package_root_dir   => DIRECTORY_CONTAINING_PACKAGE, # REQUIRED
+  uuid               => UUIDVALUE,                    # REQUIRED
+  tool_name          => TOOL_NAME,                    # REQUIRED
+  tool_version       => TOOL_VERSION,                 # REQUIRED
+  package_name       => PACKAGE_NAME,                 # REQUIRED
+  package_version    => PACKAGE_VERSION               # REQUIRED
+  conversion         => (SEE BELOW),
+  sha256hashes       => (SEE BELOW),
+  invocations        => (SEE BELOW),
+  builDir            => BUILD_DIR_PATH
+}
+----
+
+==== $conversion
+This hash contains information required to write the conversion object in SARIF. All fields are required.
+----
+{
+  tool_name             => TOOL_NAME,
+  tool_version          => TOOL_VERSION,
+  commandLine           => PROGRAM_NAME,
+  workingDirectory      => WORKING_DIRECTORY,
+  argv => [
+    'ARG1', 'ARG2', ...  # ARGUMENTS
+  ],
+  env => {               # ENVIRONMENT_VARIABLES
+    'key1' => 'value1',
+    'key2' => 'value2',
+    ...
+  }
+  startTime             => PROGRAM_START_TIME
 }
 ----
 
@@ -71,7 +135,7 @@ This hash contains the sha256 hashes for all files used in the assessment.
 ----
 
 ==== $invocations
-summary contains the information related to the invocation(s) of the tool
+This hash contains the information related to the invocation(s) of the tool
 ----
 {
   $id => {
@@ -93,30 +157,16 @@ summary contains the information related to the invocation(s) of the tool
 }
 ----
 
-==== $initialData
-initialData contains information regarding the assessment.
-----
-{
-  build_root_dir     => PACKAGE_DIRECTORY,
-  package_root_dir   => DIRECTORY_CONTAINING_PACKAGE,
-  uuid               => UUIDVALUE,
-  tool_name          => TOOL_NAME,
-  tool_version       => TOOL_VERSION,
-  package_name       => PACKAGE_NAME,
-  package_version    => PACKAGE_VERSION
-}
-----
-
 ==== $bugData
-Each bugData hash contains information on one bug instance.
+Each bugData hash contains information on one bug instance. Fields marked as required must be present. Either BugGroup or BugCode or both must also be present.
 ----
 {
   BugGroup              => GROUP_VALUE,
   BugCode               => CODE_VALUE,
-  BugMessage            => BUG_MESSAGE_VALUE,
+  BugMessage            => BUG_MESSAGE_VALUE,           # REQUIRED
   BugLocations  => [
     {
-      SourceFile        => SOURCE_FILE_NAME,
+      SourceFile        => SOURCE_FILE_NAME,            # REQUIRED
       StartLine         => START_LINE,
       EndLine           => END_LINE,
       StartColumn       => START_COLUMN,
@@ -130,7 +180,7 @@ Each bugData hash contains information on one bug instance.
   ClassName             => CLASS_NAME_VALUE,
   Methods => [
     {
-      name              => METHODNAMEVALUE,
+      name              => METHODNAMEVALUE,             # REQUIRED
     },
     ...
   ],
