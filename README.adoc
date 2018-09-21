@@ -1,9 +1,26 @@
 = SWAMP SARIF IO Libraries
 
+////
+https://github.com/mirswamp/swamp-sarif-io
+SWAMP: https://continuousassurance.org
 
+Copyright 2018 Yuan Zhe Bugh, James A. Kupsch
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the Lincense is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and 
+limitations under the License.
+////
 Module Version: 0.8.0
 
-Last updated on 9-19-2018
+Last updated on 9-21-2018
 
 === Name
 swamp-sarif-io - Library to write SARIF files from Perl
@@ -27,6 +44,10 @@ $writer->SetPretty(1);
 
 my $defaultErrorLevel = $writer->GetErrorLevel();
 $writer->SetErrorLevel(2);
+
+my @errors = ();
+push @errors, CheckStart($initialData);
+push @errors, CheckStart($bugData);
 
 $writer->AddStartTag($initialData);
 $writer->AddBugInstance($bugData);
@@ -73,6 +94,24 @@ The following Perl libraries should be installed for the program to work correct
 
 ==== new($arguments)
 This is the subroutine used to instantiate the writer. This subroutine expects one parameter, which is a hash with a data structure described below.
+
+==== SetPretty($value)
+Sets whether the writer pretty prints (meaning add indentation). Writer will pretty print if $value is true, and will not pretty print if $value is false. Default value is 0 (false).
+
+==== GetPretty()
+Returns a boolean that shows whether the writer currently pretty prints. 0 (false) is the default.
+
+==== SetErrorLevel($error_level)
+Sets how program handle errors. 0 means do nothing; 1 means just print the error; 2 means print the error and die. 2 is the default value.
+
+==== GetErrorLevel()
+Returns the error level currently set. 2 is the default value.
+
+==== CheckStart($initialData)
+Checks whether the required fields in the data structure are set. Program either does nothing, just print errors or dies depending on the error level set.
+
+==== CheckBug($bugData)
+Checks whether the required fields in the data structure are set. Program either does nothing, just print errors or dies depending on the error level set.
 
 ==== AddStartTag($initialData)
 This subroutine writes to the SARIF file data that applies to the whole assessment. 
