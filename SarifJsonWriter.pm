@@ -182,7 +182,12 @@ sub AddStartTag {
 
             CheckAndAddInvocation($self, "startTime", $invocations->{$id}{startTime});
             CheckAndAddInvocation($self, "endTime", $invocations->{$id}{endTime});
-            CheckAndAddInvocation($self, "workingDirectory", $invocations->{$id}{workingDirectory});
+
+            $writer->start_property("workingDirectory");
+            $writer->start_object();
+            CheckAndAddInvocation($self, "uri", $invocations->{$id}{workingDirectory});
+            $writer->end_object();
+            $writer->end_property();
 
             if (defined $invocations->{$id}{env}) {
                 $writer->start_property("environmentVariables");
@@ -316,29 +321,31 @@ sub AddBugInstance {
                         die "start/end line doesn't exist in $location->{SourceFile}";
                     }
 
-                    my $snippetFile = $self->{buildDir}.$location->{SourceFile};
-                    if (-r $snippetFile) {
-                        open (my $snippetFh, '<', $snippetFile) or die "Can't open $snippetFile: $!";
+                    if ($self->{buildDir}) {
+                        my $snippetFile = AdjustPath(".", $self->{buildDir}, $location->{SourceFile});
+                        if (-r $snippetFile) {
+                            open (my $snippetFh, '<', $snippetFile) or die "Can't open $snippetFile: $!";
 
-                        my $count = 1;
-                        my $snippetString = "";
-                        while(<$snippetFh>) {
-                            if ($count > $location->{EndLine}) {
-                                $writer->start_property("snippet");
-                                $writer->start_object();
-                                $writer->add_property("text", $snippetString);
-                                $writer->end_object();
-                                $writer->end_property();
-                                close $snippetFh;
-                                last;
+                            my $count = 1;
+                            my $snippetString = "";
+                            while(<$snippetFh>) {
+                                if ($count > $location->{EndLine}) {
+                                    $writer->start_property("snippet");
+                                    $writer->start_object();
+                                    $writer->add_property("text", $snippetString);
+                                    $writer->end_object();
+                                    $writer->end_property();
+                                    close $snippetFh;
+                                    last;
+                                }
+                                if ($count >= $location->{StartLine}) {
+                                    $snippetString = $snippetString.$_;
+                                }
+                                $count++;
                             }
-                            if ($count >= $location->{StartLine}) {
-                                $snippetString = $snippetString.$_;
-                            }
-                            $count++;
+                        } else {
+                            print "Unable to find $snippetFile\n";
                         }
-                    } else {
-                        print STDERR "Unable to find $snippetFile\n";
                     }
 
                     $writer->end_object();
@@ -418,14 +425,16 @@ sub AddBugInstance {
             $writer->add_property("toolSeverity", $bugData->{BugSeverity});
         }
 
-        if (@{$bugData->{CweIds}} > 0) {
-            $writer->start_property("tags");
-            $writer->start_array();
-            foreach my $cweId (@{$bugData->{CweIds}}) {
-                $writer->add_string("CWE/".$cweId);
+        if ($bugData->{CweIds}) {
+            if (@{$bugData->{CweIds}} > 0) {
+                $writer->start_property("tags");
+                $writer->start_array();
+                foreach my $cweId (@{$bugData->{CweIds}}) {
+                    $writer->add_string("CWE/".$cweId);
+                }
+                $writer->end_array();
+                $writer->end_property();
             }
-            $writer->end_array();
-            $writer->end_property();
         }
 
         $writer->end_object();
@@ -530,38 +539,38 @@ sub AddFilesObject {
     my ($self) = @_;
     my $writer = $self->{writer};
 
-    $writer->start_property("files");
-    $writer->start_object();
-    foreach my $file (keys %{$self->{files}}) {
-        my $filename = AdjustPath($self->{package_root_dir}, ".", $file);
-        my $hashPath = "build/".$file;
-
-        $writer->start_property($filename);
+    if ($self->{files}) {
+        $writer->start_property("files");
         $writer->start_object();
+        foreach my $file (keys %{$self->{files}}) {
+            my $filename = AdjustPath($self->{package_root_dir}, ".", $file);
+            my $hashPath = "build/".$file;
 
-        if ($self->{sha256hashes}) {
-            my $sha256 = FindSha256Hash($self->{sha256hashes}, $hashPath);
-            if (defined $sha256) {
-                $writer->start_property("hashes");
-                $writer->start_array();
-                $writer->start_object();
-                $writer->add_property("algorithm", "sha-256");
-                $writer->add_property("value", $sha256);
-                $writer->end_object();
-                $writer->end_array();
-                $writer->end_property();
-            } else {
-                print "Unable to find sha256 hash for $file\n";
+            $writer->start_property($filename);
+            $writer->start_object();
+
+            if ($self->{sha256hashes}) {
+                my $sha256 = FindSha256Hash($self->{sha256hashes}, $hashPath);
+                if (defined $sha256) {
+                    $writer->start_property("hashes");
+                    $writer->start_array();
+                    $writer->start_object();
+                    $writer->add_property("algorithm", "sha-256");
+                    $writer->add_property("value", $sha256);
+                    $writer->end_object();
+                    $writer->end_array();
+                    $writer->end_property();
+                } else {
+                    print "Unable to find sha256 hash for $file\n";
+                }
             }
+
+            $writer->end_object();
+            $writer->end_property();
         }
-        
         $writer->end_object();
         $writer->end_property();
     }
-    $writer->end_object();
-    $writer->end_property();
-
-    undef %{$self->{files}};
 }
 
 # Helper function to find the sha256 hash for a file
@@ -604,7 +613,13 @@ sub AddConversionObject {
     }
     $writer->end_array();
     $writer->end_property();
-    $writer->add_property("workingDirectory", $conversion->{workingDirectory});
+
+    $writer->start_property("workingDirectory");
+    $writer->start_object();
+    $writer->add_property("uri", $conversion->{workingDirectory});
+    $writer->end_object();
+    $writer->end_property();
+
     $writer->start_property("environmentVariables");
     $writer->start_object();
     foreach my $key (keys %{$conversion->{env}}) {
