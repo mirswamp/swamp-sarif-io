@@ -4,7 +4,7 @@
 # SWAMP: https://continuousassurance.org
 #
 # Copyright 2018 Yuan Zhe Bugh, James A. Kupsch
-# 
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -14,7 +14,7 @@
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the Lincense is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and 
+# See the License for the specific language governing permissions and
 # limitations under the License.
 
 package SarifJsonWriter;
@@ -162,7 +162,8 @@ sub AddStartTag {
 
     # Data from assessment summary
     my $invocations = $self->{invocations};
-    if ($invocations) {
+
+    if (%{$invocations}) {
         $writer->start_property("invocations");
         $writer->start_array();
 
@@ -317,11 +318,7 @@ sub AddBugInstance {
                         $writer->add_property("endColumn", MakeInt($location->{EndColumn}));
                     }
 
-                    if ((!exists $location->{StartLine}) || (!exists $location->{EndLine})) {
-                        die "start/end line doesn't exist in $location->{SourceFile}";
-                    }
-
-                    if ($self->{buildDir}) {
+                    if ($self->{buildDir} && !exists $location->{StartLine} && !exists $location->{EndLine}) {
                         my $snippetFile = AdjustPath(".", $self->{buildDir}, $location->{SourceFile});
                         if (-r $snippetFile) {
                             open (my $snippetFh, '<', $snippetFile) or die "Can't open $snippetFile: $!";
@@ -488,6 +485,96 @@ sub Close {
     close $self->{fh};
 }
 
+# Only method to call after new() when there is a failure.
+# Writes only a sarif file with the conversion object.
+# Inside the conversion object is the property "toolNotifications"
+# which will contain the error message
+sub AddFailure {
+    my ($self, $data) = @_;
+    my $writer = $self->{writer};
+    my $conversion = $data->{conversion};
+
+    $writer->start_object(); # Start sarif object
+    $writer->add_property("version", $sarifVersion);
+    $writer->add_property("\$schema", $sarifSchema);
+    $writer->start_property("runs");
+    $writer->start_array();
+    $writer->start_object(); # Start new run object
+
+    # start tool object
+    $writer->start_property("tool");
+    $writer->start_object();
+    $writer->add_property("name", $data->{tool}{tool_name});
+    $writer->end_object();
+    $writer->end_property();
+
+    # start conversion object
+    $writer->start_property("conversion");
+    $writer->start_object();
+    $writer->start_property("tool");
+    $writer->start_object();
+    $writer->add_property("name", $conversion->{tool_name});
+    $writer->add_property("version", $conversion->{tool_version});
+    $writer->end_object();
+    $writer->end_property();
+
+    $writer->start_property("invocation");
+
+    $writer->start_object();
+    $writer->add_property("commandLine", $conversion->{commandLine});
+
+    $writer->start_property("arguments");
+    $writer->start_array();
+    foreach my $arg (@{$conversion->{argv}}) {
+        $writer->add_string($arg);
+    }
+    $writer->end_array();
+    $writer->end_property();
+
+    $writer->start_property("workingDirectory");
+    $writer->start_object();
+    $writer->add_property("uri", $conversion->{workingDirectory});
+    $writer->end_object();
+    $writer->end_property();
+
+    $writer->start_property("environmentVariables");
+    $writer->start_object();
+    foreach my $key (keys %{$conversion->{env}}) {
+        $writer->add_property($key, $conversion->{env}{$key});
+    }
+    $writer->end_object();
+    $writer->end_property();
+
+    $writer->start_property("toolNotifications");
+    $writer->start_array();
+    $writer->start_object();
+    $writer->add_property("level", "error");
+    $writer->start_property("message");
+    $writer->start_object();
+    $writer->add_property("text", $data->{message});
+    $writer->end_object();
+    $writer->end_property();
+    $writer->end_object();
+    $writer->end_array();
+    $writer->end_property();
+
+    $writer->add_property("exitCode", 0);
+    $writer->add_property("startTime", ConvertEpoch($conversion->{startTime}));
+    $writer->add_property("endTime", ConvertEpoch(time()));
+
+    $writer->end_object();
+    $writer->end_property(); # end invocation
+
+    $writer->end_object();
+    $writer->end_property(); # end conversion
+
+    $writer->end_object();
+    $writer->end_array();
+    $writer->end_property();
+    $writer->end_object();
+    close $self->{fh};
+}
+
 # Helper function to check if a given property in invocation exists and
 # write it if it does.
 sub CheckAndAddInvocation {
@@ -591,7 +678,7 @@ sub AddConversionObject {
     my ($self) = @_;
     my $writer = $self->{writer};
     my $conversion = $self->{conversion};
-    
+
     $writer->start_property("conversion");
     $writer->start_object();
     $writer->start_property("tool");
@@ -600,12 +687,12 @@ sub AddConversionObject {
     $writer->add_property("version", $conversion->{tool_version});
     $writer->end_object();
     $writer->end_property();
-    
+
     $writer->start_property("invocation");
-    
+
     $writer->start_object();
     $writer->add_property("commandLine", $conversion->{commandLine});
-    
+
     $writer->start_property("arguments");
     $writer->start_array();
     foreach my $arg (@{$conversion->{argv}}) {
@@ -630,13 +717,13 @@ sub AddConversionObject {
     $writer->add_property("exitCode", 0);
     $writer->add_property("startTime", ConvertEpoch($conversion->{startTime}));
     $writer->add_property("endTime", ConvertEpoch(time()));
-   
+
     $writer->end_object();
     $writer->end_property(); # end invocation
-    
+
     $writer->end_object();
     $writer->end_property();
-}   
+}
 
 # Helper function to write the threadFLowLocations object
 sub AddThreadFlowsLocations {
@@ -708,7 +795,7 @@ sub NormalizePath {
     $p = '.' if $p eq '';      # change empty dirs to .
     $p =~ s/\/\.$/\//;                 # remove trailing . directory names
     $p =~ s/\/$// unless $p eq '/'; # remove trailing /
-    
+
     return $p;
 }
 

@@ -18,9 +18,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and 
 limitations under the License.
 ////
-Module Version: 0.8.0
+Module Version: 0.8.1
 
-Last updated on 9-21-2018
+Last updated on 10-17-2018
 
 === Name
 swamp-sarif-io - Library to write SARIF files from Perl
@@ -32,6 +32,7 @@ Documentation for SCARF is available https://github.com/mirswamp/swamp-scarf-io/
 Documentation for SARIF is available https://github.com/oasis-tcs/sarif-spec/tree/master/Documents/ProvisionalDrafts[here].
 
 === Synopsis
+An example of a normal usage where the assessment ran successfully:
 [source,perl]
 ----
 use SarifJsonWriter;
@@ -52,6 +53,18 @@ push @errors, CheckStart($bugData);
 $writer->AddStartTag($initialData);
 $writer->AddBugInstance($bugData);
 $writer->Close();
+----
+An example usage where the assessment was either unable to run or failed:
+[source, perl]
+----
+use SarifJsonWriter;
+
+my $output = "/path/to/file.sarif"
+my $writer = new SarifJsonWriter($output, "utf-8");
+
+$writer->SetPretty(1);
+
+$writer->AddFailure($failureData);
 ----
 
 === Output
@@ -92,8 +105,8 @@ The following Perl libraries should be installed for the program to work correct
 
 === Subroutines
 
-==== new($arguments)
-This is the subroutine used to instantiate the writer. This subroutine expects one parameter, which is a hash with a data structure described below.
+==== new($output_file, $encoding)
+This is the subroutine used to instantiate the writer. This subroutine expects two parameters, which are the output file name and the encoding. Only the "utf-8" encoding is supported right now.
 
 ==== SetPretty($value)
 Sets whether the writer pretty prints (meaning add indentation). Writer will pretty print if $value is true, and will not pretty print if $value is false. Default value is 0 (false).
@@ -122,6 +135,9 @@ Every BugInstance in a SCARF file maps to a result object in SARIF. This subrout
 ==== Close()
 This subroutine should be called after all BugInstances are read, which is after AddBugInstance($bugData). Data saved from initialData and bugData are written out here and the SARIF file is also closed here.
 
+==== AddFailure($failureData)
+The only method to call after new() when there is a failure. This subroutine writes a sarif file containing only the conversion object in the run object. Inside the conversion object is the property "toolNotifications" which will contain the error message.
+
 === Data Structures
 The following are the data structures used in the callbacks listed above:
 
@@ -139,12 +155,15 @@ initialData contains information regarding the assessment.
   conversion         => (SEE BELOW),
   sha256hashes       => (SEE BELOW),
   invocations        => (SEE BELOW),
-  builDir            => BUILD_DIR_PATH
+  buildDir           => BUILD_DIR_PATH
 }
 ----
 
 ==== $conversion
-This hash contains information required to write the conversion object in SARIF. All fields are required.
+This is the subroutine used to instantiate the writer. This subroutine expects one parameter, which is a hash with a data structure described below.
+This hash contai
+This is the subroutine used to instantiate the writer. This subroutine expects one parameter, which is a hash with a data structure described below.d to write the conversion object in SARIF. All fi
+This is the subroutine used to instantiate the writer. This subroutine expects one parameter, which is a hash with a data structure described below.
 ----
 {
   tool_name             => TOOL_NAME,
@@ -227,5 +246,16 @@ Each bugData hash contains information on one bug instance. Fields marked as req
   CweIds => [
     CWEIDVALUE, CWEIDVALUE, ...
   ],
+}
+----
+
+==== $failureData
+----
+{
+  conversion            => (SEE ABOVE),                 # REQUIRED
+  tool => {
+    tool_name           => TOOL_NAME,                   # REQUIRED
+  }
+  message               => ERROR_MESSAGE                # REQUIRED
 }
 ----
