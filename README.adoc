@@ -160,10 +160,7 @@ initialData contains information regarding the assessment.
 ----
 
 ==== $conversion
-This is the subroutine used to instantiate the writer. This subroutine expects one parameter, which is a hash with a data structure described below.
-This hash contai
-This is the subroutine used to instantiate the writer. This subroutine expects one parameter, which is a hash with a data structure described below.d to write the conversion object in SARIF. All fi
-This is the subroutine used to instantiate the writer. This subroutine expects one parameter, which is a hash with a data structure described below.
+This hash contains information required to write the conversion object in SARIF. All fields are required.
 ----
 {
   tool_name             => TOOL_NAME,
@@ -250,12 +247,13 @@ Each bugData hash contains information on one bug instance. Fields marked as req
 ----
 
 ==== $failureData
+This hash contains all the information needed to write to a sarif file in the case that the converter finds that the assessment failed. All fields listed below are required.
 ----
 {
   conversion            => (SEE ABOVE),                 # REQUIRED
   tool => {
     tool_name           => TOOL_NAME,                   # REQUIRED
-  }
+  },
   message               => ERROR_MESSAGE                # REQUIRED
 }
 ----
