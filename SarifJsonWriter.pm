@@ -114,9 +114,12 @@ sub AddStartTag {
         }
     }
 
-    $self->{uriBaseId} = $initialData->{build_root_dir};
+    if ($initialData->{results_root_dir}) {
+        $self->{results_root_dir} = $initialData->{results_root_dir};
+    }
     $self->{package_root_dir} = $initialData->{package_root_dir};
     $self->{conversion} = $initialData->{conversion};
+
     if ($initialData->{sha256hashes}) {
         $self->{sha256hashes} = $initialData->{sha256hashes};
     }
@@ -150,6 +153,9 @@ sub AddStartTag {
     $writer->start_property("originalUriBaseIds");
     $writer->start_object();
     $writer->add_property("PKGROOT", $path);
+    if ($initialData->{results_root_dir}) {
+        $writer->add_property("RESULTSROOT", "file://".$initialData->{results_root_dir});
+    }
     $writer->end_object();
     $writer->end_property();
 
@@ -376,6 +382,9 @@ sub AddBugInstance {
     $writer->start_property("fileLocation");
     $writer->start_object();
     $writer->add_property("uri", $bugData->{AssessmentReportFile});
+    if ($self->{results_root_dir}) {
+        $writer->add_property("uriBaseId", "RESULTSROOT");
+    }
     $writer->end_object();
     $writer->end_property();
     $writer->end_object();

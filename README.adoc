@@ -18,9 +18,9 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and 
 limitations under the License.
 ////
-Module Version: 0.8.1
+Module Version: 0.8.2
 
-Last updated on 10-17-2018
+Last updated on 10-24-2018
 
 === Name
 swamp-sarif-io - Library to write SARIF files from Perl
@@ -145,13 +145,14 @@ The following are the data structures used in the callbacks listed above:
 initialData contains information regarding the assessment. 
 ----
 {
-  build_root_dir     => PACKAGE_DIRECTORY,            # REQUIRED
-  package_root_dir   => DIRECTORY_CONTAINING_PACKAGE, # REQUIRED
-  uuid               => UUIDVALUE,                    # REQUIRED
-  tool_name          => TOOL_NAME,                    # REQUIRED
-  tool_version       => TOOL_VERSION,                 # REQUIRED
-  package_name       => PACKAGE_NAME,                 # REQUIRED
-  package_version    => PACKAGE_VERSION               # REQUIRED
+  build_root_dir     => PACKAGE_DIRECTORY,                        # REQUIRED
+  results_root_dir   => DIRECTORY_CONTAINING_ASSESSMENT_REPORTS,
+  package_root_dir   => DIRECTORY_CONTAINING_PACKAGE,             # REQUIRED
+  uuid               => UUIDVALUE,                                # REQUIRED
+  tool_name          => TOOL_NAME,                                # REQUIRED
+  tool_version       => TOOL_VERSION,                             # REQUIRED
+  package_name       => PACKAGE_NAME,                             # REQUIRED
+  package_version    => PACKAGE_VERSION                           # REQUIRED
   conversion         => (SEE BELOW),
   sha256hashes       => (SEE BELOW),
   invocations        => (SEE BELOW),
