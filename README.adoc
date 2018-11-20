@@ -18,9 +18,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and 
 limitations under the License.
 ////
-Module Version: 0.8.2
+Module Version: 0.8.3
 
-Last updated on 10-24-2018
+Last updated on 11-20-2018
+
+Sarif version currently tracking: 2.0.0-csd.2.beta.2018-10-10
 
 === Name
 swamp-sarif-io - Library to write SARIF files from Perl
@@ -146,8 +148,8 @@ initialData contains information regarding the assessment.
 ----
 {
   build_root_dir     => PACKAGE_DIRECTORY,                        # REQUIRED
-  results_root_dir   => DIRECTORY_CONTAINING_ASSESSMENT_REPORTS,
   package_root_dir   => DIRECTORY_CONTAINING_PACKAGE,             # REQUIRED
+  results_root_dir   => DIRECTORY_CONTAINING_ASSESSMENT_REPORTS,  # REQUIRED
   uuid               => UUIDVALUE,                                # REQUIRED
   tool_name          => TOOL_NAME,                                # REQUIRED
   tool_version       => TOOL_VERSION,                             # REQUIRED
@@ -194,27 +196,31 @@ This hash contains the sha256 hashes for all files used in the assessment.
 This hash contains the information related to the invocation(s) of the tool
 ----
 {
-  $id => {
-    commandLine           => COMMAND_LINE_VALUE,
-    startTime             => INVOCATION_START_TIME,
-    endTime               => INVOCATION_END_TIME,
-    workingDirectory      => WORKING_DIRECTORY,
-    exitCode              => EXIT_CODE_VALUE,
-    args => [
-      'ARG1', 'ARG2', ...  # ARGUMENTS
-    ], 
-    env => {               # ENVIRONMENT_VARIABLES
-      'key1' => 'value1',
-      'key2' => 'value2',
-      ...
-    }
-  },
-  ...
+  packageRootDir            => PACKAGE_ROOT_DIR_VALUE,
+  assessments => [
+    {
+      commandLine           => COMMAND_LINE_VALUE,
+      startTime             => INVOCATION_START_TIME,
+      endTime               => INVOCATION_END_TIME,
+      workingDirectory      => WORKING_DIRECTORY,
+      exitCode              => EXIT_CODE_VALUE,
+      args => [
+        'ARG1', 'ARG2', ...  # ARGUMENTS
+      ], 
+      env => {               # ENVIRONMENT_VARIABLES
+        'key1' => 'value1',
+        'key2' => 'value2',
+        ...
+      },
+      report                => ASSESSMENT_REPORT_FILE
+    },
+    ...
+  ]
 }
 ----
 
 ==== $bugData
-Each bugData hash contains information on one bug instance. Fields marked as required must be present. Either BugGroup or BugCode or both must also be present.
+Each bugData hash contains information on one bug instance. Fields marked as required must be present. If both BugGroup and BugCode are not present, the ruleId for the corresponding result object in sarif will be set to "\___UNKNOWN___".
 ----
 {
   BugGroup              => GROUP_VALUE,

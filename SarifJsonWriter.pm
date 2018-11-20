@@ -24,8 +24,8 @@ use Data::Dumper;
 use Exporter 'import';
 our @EXPORT_OK = qw(CheckStart CheckBug);
 
-my $sarifVersion = "2.0.0";
-my $sarifSchema = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema.json";
+my $sarifVersion = "2.0.0-csd.2.beta.2018-10-10";
+my $sarifSchema = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-2.0.0-csd.2.beta.2018-10-10.json";
 
 # Instantiates the writer and store some data for later use
 sub new {
@@ -86,7 +86,7 @@ sub CheckStart {
     my ($initialData) = @_;
     my @errors = ();
 
-    foreach my $key (qw/ build_root_dir package_root_dir uuid tool_name
+    foreach my $key (qw/ build_root_dir package_root_dir results_root_dir uuid tool_name
                          tool_version package_name package_version/) {
         if (!defined $initialData->{$key}) {
             push @errors, "Required key $key not found in initialData";
@@ -114,17 +114,12 @@ sub AddStartTag {
         }
     }
 
-    if ($initialData->{results_root_dir}) {
-        $self->{results_root_dir} = $initialData->{results_root_dir};
-    }
+    $self->{PKGROOT} = AdjustPath(".", $initialData->{build_root_dir}, $initialData->{package_root_dir});
     $self->{package_root_dir} = $initialData->{package_root_dir};
     $self->{conversion} = $initialData->{conversion};
 
     if ($initialData->{sha256hashes}) {
         $self->{sha256hashes} = $initialData->{sha256hashes};
-    }
-    if ($initialData->{invocations}) {
-        $self->{invocations} = $initialData->{invocations};
     }
     if ($initialData->{buildDir}) {
         $self->{buildDir} = $initialData->{buildDir};
@@ -136,13 +131,15 @@ sub AddStartTag {
     $writer->start_property("runs");
     $writer->start_array();
 
-    my $path = AdjustPath(".", $initialData->{build_root_dir}, $initialData->{package_root_dir});
-    $path = "file://".$path;
-
     # start new run object
     $writer->start_object();
 
+    $writer->start_property("id");
+    $writer->start_object();
     $writer->add_property("instanceGuid", $initialData->{uuid});
+    $writer->end_object();
+    $writer->end_property();
+
     $writer->start_property("tool");
     $writer->start_object();
     $writer->add_property("name", $initialData->{tool_name});
@@ -152,10 +149,16 @@ sub AddStartTag {
 
     $writer->start_property("originalUriBaseIds");
     $writer->start_object();
-    $writer->add_property("PKGROOT", $path);
-    if ($initialData->{results_root_dir}) {
-        $writer->add_property("RESULTSROOT", "file://".$initialData->{results_root_dir});
-    }
+    $writer->start_property("PKGROOT");
+    $writer->start_object();
+    $writer->add_property("uri", "file://".$self->{PKGROOT});
+    $writer->end_object();
+    $writer->end_property();
+    $writer->start_property("RESULTSROOT");
+    $writer->start_object();
+    $writer->add_property("uri", "file://".$initialData->{results_root_dir});
+    $writer->end_object();
+    $writer->end_property();
     $writer->end_object();
     $writer->end_property();
 
@@ -167,48 +170,49 @@ sub AddStartTag {
     $writer->end_property();
 
     # Data from assessment summary
-    my $invocations = $self->{invocations};
 
-    if (%{$invocations}) {
+    if ($initialData->{invocations} && keys @{$initialData->{invocations}{assessments}} > 0) {
+        my $invocations = $initialData->{invocations}{assessments};
         $writer->start_property("invocations");
         $writer->start_array();
 
-        foreach my $id (keys %{$invocations}) {
+        foreach my $assessment (@{$invocations}) {
             $writer->start_object();
-            CheckAndAddInvocation($self, "commandLine", $invocations->{$id}{commandLine});
+            CheckAndAddInvocation($self, "commandLine", $assessment->{commandLine});
 
-            if (@{$invocations->{$id}{args}} > 1) {
+            if (@{$assessment->{args}} > 1) {
                 $writer->start_property("arguments");
                 $writer->start_array();
-                foreach my $arg (@{$invocations->{$id}{args}}) {
+                foreach my $arg (@{$assessment->{args}}) {
                     $writer->add_string($arg);
-                    }
-                    $writer->end_array();
-                    $writer->end_property();
+                }
+                $writer->end_array();
+                $writer->end_property();
             }
 
-            CheckAndAddInvocation($self, "startTime", $invocations->{$id}{startTime});
-            CheckAndAddInvocation($self, "endTime", $invocations->{$id}{endTime});
+            CheckAndAddInvocation($self, "startTimeUtc", $assessment->{startTime});
+            CheckAndAddInvocation($self, "endTimeUtc", $assessment->{endTime});
 
             $writer->start_property("workingDirectory");
             $writer->start_object();
-            CheckAndAddInvocation($self, "uri", $invocations->{$id}{workingDirectory});
+            my $wd = AdjustPath($self->{PKGROOT}, ".", $assessment->{workingDirectory});
+            $writer->add_property("uri", $wd);
+            $writer->add_property("uriBaseId", "PKGROOT");
             $writer->end_object();
             $writer->end_property();
 
-            if (defined $invocations->{$id}{env}) {
+            if (defined $assessment->{env}) {
                 $writer->start_property("environmentVariables");
                 $writer->start_object();
-                foreach my $key (keys %{$invocations->{$id}{env}}) {
-                    my $value = $invocations->{$id}{env}{$key};
+                foreach my $key (keys %{$assessment->{env}}) {
+                    my $value = $assessment->{env}{$key};
                     $writer->add_property($key, $value);
                 }
                 $writer->end_object();
                 $writer->end_property();
             }
 
-            CheckAndAddInvocation($self, "exitCode", $invocations->{$id}{exitCode});
-
+            CheckAndAddInvocation($self, "exitCode", $assessment->{exitCode});
             $writer->end_object();
         }
 
@@ -225,10 +229,6 @@ sub AddStartTag {
 sub CheckBug {
     my ($bugInstance) = @_;
     my @errors = ();
-
-    if (!defined $bugInstance->{BugCode} && !defined $bugInstance->{BugGroup}) {
-        push @errors, "Either BugCode or BugGroup or both must be defined";
-    }
 
     for my $key (qw/BugMessage/) {
         if (!defined $bugInstance->{$key}) {
@@ -276,6 +276,9 @@ sub AddBugInstance {
     my @ruleId = ();
     push @ruleId, $bugData->{BugGroup} if $bugData->{BugGroup};
     push @ruleId, $bugData->{BugCode} if $bugData->{BugCode};
+    if (@ruleId == 0) {
+        push @ruleId, "__UNKNOWN__";
+    }
     $writer->add_property("ruleId", join('/', @ruleId));
 
     $writer->add_property("level", "warning");
@@ -382,9 +385,7 @@ sub AddBugInstance {
     $writer->start_property("fileLocation");
     $writer->start_object();
     $writer->add_property("uri", $bugData->{AssessmentReportFile});
-    if ($self->{results_root_dir}) {
-        $writer->add_property("uriBaseId", "RESULTSROOT");
-    }
+    $writer->add_property("uriBaseId", "RESULTSROOT");
     $writer->end_object();
     $writer->end_property();
     $writer->end_object();
@@ -568,8 +569,8 @@ sub AddFailure {
     $writer->end_property();
 
     $writer->add_property("exitCode", 0);
-    $writer->add_property("startTime", ConvertEpoch($conversion->{startTime}));
-    $writer->add_property("endTime", ConvertEpoch(time()));
+    $writer->add_property("startTimeUtc", ConvertEpoch($conversion->{startTime}));
+    $writer->add_property("endTimeUtc", ConvertEpoch(time()));
 
     $writer->end_object();
     $writer->end_property(); # end invocation
@@ -649,12 +650,9 @@ sub AddFilesObject {
                 my $sha256 = FindSha256Hash($self->{sha256hashes}, $hashPath);
                 if (defined $sha256) {
                     $writer->start_property("hashes");
-                    $writer->start_array();
                     $writer->start_object();
-                    $writer->add_property("algorithm", "sha-256");
-                    $writer->add_property("value", $sha256);
+                    $writer->add_property("sha-256", $sha256);
                     $writer->end_object();
-                    $writer->end_array();
                     $writer->end_property();
                 } else {
                     print "Unable to find sha256 hash for $file\n";
@@ -724,8 +722,8 @@ sub AddConversionObject {
     $writer->end_object();
     $writer->end_property();
     $writer->add_property("exitCode", 0);
-    $writer->add_property("startTime", ConvertEpoch($conversion->{startTime}));
-    $writer->add_property("endTime", ConvertEpoch(time()));
+    $writer->add_property("startTimeUtc", ConvertEpoch($conversion->{startTime}));
+    $writer->add_property("endTimeUtc", ConvertEpoch(time()));
 
     $writer->end_object();
     $writer->end_property(); # end invocation
