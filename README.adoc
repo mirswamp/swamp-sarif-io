@@ -18,11 +18,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and 
 limitations under the License.
 ////
-Module Version: 0.8.3
+Module Version: 0.8.5
 
-Last updated on 11-20-2018
+Last updated on 03-06-2019
 
-Sarif version currently tracking: 2.0.0-csd.2.beta.2018-10-10
+Sarif version currently tracking: sarif-2.0.0-csd.2.beta.2019-01-09
 
 === Name
 swamp-sarif-io - Library to write SARIF files from Perl
@@ -42,21 +42,35 @@ use SarifJsonWriter;
 my $output = "/path/to/file.sarif"
 my $writer = new SarifJsonWriter($output, "utf-8");
 
-my $defaultPretty = $writer->GetPretty();
-$writer->SetPretty(1);
-
-my $defaultErrorLevel = $writer->GetErrorLevel();
-$writer->SetErrorLevel(2);
+my %optionsData = (
+  pretty => 1,
+  external => {
+    results => {
+      name => "results.sarif-external-properties",
+      maxItems => 1000,
+    },
+  },
+)
+$writer->SetOptions(\%optionsData);
 
 my @errors = ();
-push @errors, CheckStart($initialData);
-push @errors, CheckStart($bugData);
+push @errors, CheckInitialData($initialData);
+push @errors, CheckInvocations($invocations);
+push @errors, CheckResultData($resultData);
+push @errors, CheckRuleData($ruleData);
 
-$writer->AddStartTag($initialData);
-$writer->AddBugInstance($bugData);
-$writer->Close();
+$writer->BeginFile();
+$writer->BeginRun($initialData);
+$writer->AddOriginalUriBaseIds($baseIds);
+$writer->AddInvocations($invocations);
+$writer->BeginResults();
+$writer->AddResult($resultData);
+$writer->EndResults();
+$writer->AddResources($ruleData);
+$writer->EndRun($endData);
+$writer->EndFile();
 ----
-An example usage where the assessment was either unable to run or failed:
+An example usage where the assessment failed to run:
 [source, perl]
 ----
 use SarifJsonWriter;
@@ -77,24 +91,38 @@ Significant SARIF properties included in the generated SARIF files:
   $schema: "...",
   runs: [
     {
-      instanceGuid: "...",
-      tool: { ... },
-      invocations: [ ... ],
-      conversion: { ... },
+      id: {
+        instanceGuid: "...",
+      },
+      tool: {
+        name: "...",
+        version: "...",
+      },
+      properties: { ... },
       originalUriBaseIds: { ... },
-      files: [ ... ],
-      logicalLocations: { ... },
+      invocations: [
+        commandLine: "...",
+        arguments: [ ... ],
+        startTimeUtc: "...",
+        endTimeUtc: "...",
+        workingDirectory: { ... },
+        environmentVariables: { ... },
+        exitCode: "..."
+      ],
       results: [
         {
           ruleId: "...",
           level: "...",
-          message: "...",
+          rank: "...",
+          message: { ... },
           locations: [ ... ], # including line, column, snippets
           codeFlows: [ ... ],
-          conversionProvenance: { ... },
+          provenance: { ... },
           properties: { tags: [], ... },
         }, ...
       ]
+      files: [ ... ],
+      conversion: { ... },      
     }, ...
   ]
 }
@@ -110,38 +138,84 @@ The following Perl libraries should be installed for the program to work correct
 ==== new($output_file, $encoding)
 This is the subroutine used to instantiate the writer. This subroutine expects two parameters, which are the output file name and the encoding. Only the "utf-8" encoding is supported right now.
 
-==== SetPretty($value)
-Sets whether the writer pretty prints (meaning add indentation). Writer will pretty print if $value is true, and will not pretty print if $value is false. Default value is 0 (false).
+==== SetOptions($optionsData)
+Sets options for the writer. Current options supported includes whether the writer pretty prints (meaning add indentation), setting the error level and to set which properties will be externalized.
+
+Error level sets how the program handle errors. 0 means do nothing; 1 means just print the error; 2 means print the error and die. 2 is the default value.
+
+If an external property has a set max size, the external property file that contains this external property cannot contain an external property other than this external property.
 
 ==== GetPretty()
 Returns a boolean that shows whether the writer currently pretty prints. 0 (false) is the default.
 
-==== SetErrorLevel($error_level)
-Sets how program handle errors. 0 means do nothing; 1 means just print the error; 2 means print the error and die. 2 is the default value.
-
 ==== GetErrorLevel()
 Returns the error level currently set. 2 is the default value.
 
-==== CheckStart($initialData)
+==== BeginFile()
+Starts writing some initial properties to the SARIF file.
+
+==== BeginRun($initialData)
+This subroutine writes to the SARIF file data that applies to the whole assessment.
+
+==== AddOriginalUriBaseIds($baseIds)
+Adds the originalUriBaseIds property to the SARIF file.
+
+==== AddInvocations($invocations)
+Note: AddOriginalUriBaseIds($baseIds) must be called first before AddInvocations($invocations) can be called. This is because paths in the workingDirectory object adjusts to the path set in AddOriginalUriBaseIds($baseIds).
+
+This subroutine adds the invocation property.
+
+==== BeginResults()
+Starts the results property and array. Called once before AddResult($resultData).
+
+==== AddResult($resultData)
+Every BugInstance in a SCARF file maps to a result object in SARIF. This subroutine writes necessary data for a result object, as well as storing some data that will be written after all result objects are written.
+
+==== EndResults()
+Ends the results property and array. Called once after all AddResult($resultData) calls.
+
+==== AddResources($ruleData)
+Adds the resources object.
+
+==== EndRun($endData)
+Data saved previously will be written out here. Also ends the run object.
+
+==== EndFile()
+Ends arrays and properties and closes all files opened.
+
+==== CheckInitialData($initialData)
 Checks whether the required fields in the data structure are set. Program either does nothing, just print errors or dies depending on the error level set.
 
-==== CheckBug($bugData)
+==== CheckInvocations($invocations)
 Checks whether the required fields in the data structure are set. Program either does nothing, just print errors or dies depending on the error level set.
 
-==== AddStartTag($initialData)
-This subroutine writes to the SARIF file data that applies to the whole assessment. 
+==== CheckResultData($bugData)
+Checks whether the required fields in the data structure are set. Program either does nothing, just print errors or dies depending on the error level set.
 
-==== AddBugInstance($bugData)
-Every BugInstance in a SCARF file maps to a result object in SARIF. This subroutine writes necessary data from a BugInstance to a result object, as well as storing some data that will be written by the Close() subroutine (when all BugInstances are read). This subroutine should be called after AddStartTag($initialData).
-
-==== Close()
-This subroutine should be called after all BugInstances are read, which is after AddBugInstance($bugData). Data saved from initialData and bugData are written out here and the SARIF file is also closed here.
+==== CheckRuleData($ruleData)
+Checks whether the required fields in the data structure are set. Program either does nothing, just print errors or dies depending on the error level set.
 
 ==== AddFailure($failureData)
 The only method to call after new() when there is a failure. This subroutine writes a sarif file containing only the conversion object in the run object. Inside the conversion object is the property "toolNotifications" which will contain the error message.
 
 === Data Structures
 The following are the data structures used in the callbacks listed above:
+
+==== $optionsData
+optionsData contains information that is supposed to be passed to the writer at the beginning for the purpose of configuring the writer.
+
+----
+{
+  pretty             => PRETTY_VALUE (Default is false),
+  error_level        => ERROR_LEVEL_VALUE (Default is 2),
+  external => {
+    $PROPERTY_NAME => {
+      name           => NAME_VALUE,
+      maxItems       => MAX_ITEMS_VALUE,    # Only for properties that contain arrays
+    },
+  }
+}
+----
 
 ==== $initialData
 initialData contains information regarding the assessment. 
@@ -155,40 +229,15 @@ initialData contains information regarding the assessment.
   tool_version       => TOOL_VERSION,                             # REQUIRED
   package_name       => PACKAGE_NAME,                             # REQUIRED
   package_version    => PACKAGE_VERSION                           # REQUIRED
-  conversion         => (SEE BELOW),
-  sha256hashes       => (SEE BELOW),
-  invocations        => (SEE BELOW),
   buildDir           => BUILD_DIR_PATH
 }
 ----
 
-==== $conversion
-This hash contains information required to write the conversion object in SARIF. All fields are required.
+==== $baseIds
 ----
 {
-  tool_name             => TOOL_NAME,
-  tool_version          => TOOL_VERSION,
-  commandLine           => PROGRAM_NAME,
-  workingDirectory      => WORKING_DIRECTORY,
-  argv => [
-    'ARG1', 'ARG2', ...  # ARGUMENTS
-  ],
-  env => {               # ENVIRONMENT_VARIABLES
-    'key1' => 'value1',
-    'key2' => 'value2',
-    ...
-  }
-  startTime             => PROGRAM_START_TIME
-}
-----
-
-==== $sha256hashes
-This hash contains the sha256 hashes for all files used in the assessment.
-----
-{
-  /path/to/file1 => SHA256 VALUE FOR FILE1,
-  /path/to/file2 => SHA256 VALUE FOR FILE2,
-  ...
+  PACKAGEROOT        => PACKAGE_ROOT_VALUE,                 # REQUIRED
+  RESULTSROOT        => RESULTS_ROOT_VALUE,
 }
 ----
 
@@ -219,12 +268,13 @@ This hash contains the information related to the invocation(s) of the tool
 }
 ----
 
-==== $bugData
-Each bugData hash contains information on one bug instance. Fields marked as required must be present. If both BugGroup and BugCode are not present, the ruleId for the corresponding result object in sarif will be set to "\___UNKNOWN___".
+==== $resultData
+Each resultData hash contains information for one result object. Fields marked as required must be present. If both BugGroup and BugCode are not present, the ruleId for the corresponding result object in sarif will be set to "\___UNKNOWN___".
 ----
 {
   BugGroup              => GROUP_VALUE,
   BugCode               => CODE_VALUE,
+  BugRank               => RANK_VALUE,
   BugMessage            => BUG_MESSAGE_VALUE,           # REQUIRED
   BugLocations  => [
     {
@@ -238,11 +288,12 @@ Each bugData hash contains information on one bug instance. Fields marked as req
     },
     ...
   ],
-  AssessmentReportFile  => ASSESSMENT_REPORT_FILE_NAME,
+  AssessmentReportFile  => ASSESSMENT_REPORT_FILE_NAME, # REQUIRED
+  BuildId               => BUILD_ID_VALUE,              # REQUIRED
   ClassName             => CLASS_NAME_VALUE,
   Methods => [
     {
-      name              => METHODNAMEVALUE,             # REQUIRED
+      name              => METHODNAMEVALUE,             
     },
     ...
   ],
@@ -250,6 +301,60 @@ Each bugData hash contains information on one bug instance. Fields marked as req
   CweIds => [
     CWEIDVALUE, CWEIDVALUE, ...
   ],
+}
+----
+
+==== $ruleData
+This hash contains information required to write the rules object in the run.resources property.
+----
+[
+  {
+    id                  => ID_VALUE,            # REQUIRED
+    defaultLevel        => DEFAULT_LEVEL,       
+    defaultRank         => DEFAULT_RANK,        
+    shortDescription    => SHORT_DESCRIPTION,
+    fullDescription     => FULL_DESCRIPTION,    # REQUIRED
+  },
+  ...
+]
+----
+
+==== $endData
+This hash contains information required to write out the final objects in the sarif file
+----
+{
+  sha256hashes          => (SEE_BELOW),
+  conversion            => (SEE_BELOW),
+}
+----
+
+==== $sha256hashes
+This hash contains the sha256 hashes for all files used in the assessment.
+----
+{
+  /path/to/file1 => SHA256 VALUE FOR FILE1,
+  /path/to/file2 => SHA256 VALUE FOR FILE2,
+  ...
+}
+----
+
+==== $conversion
+This hash contains information required to write the conversion object in SARIF. All fields are required.
+----
+{
+  tool_name             => TOOL_NAME,
+  tool_version          => TOOL_VERSION,
+  commandLine           => PROGRAM_NAME,
+  workingDirectory      => WORKING_DIRECTORY,
+  argv => [
+    'ARG1', 'ARG2', ...  # ARGUMENTS
+  ],
+  env => {               # ENVIRONMENT_VARIABLES
+    'key1' => 'value1',
+    'key2' => 'value2',
+    ...
+  }
+  startTime             => PROGRAM_START_TIME
 }
 ----
 

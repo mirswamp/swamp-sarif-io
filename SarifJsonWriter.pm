@@ -22,10 +22,11 @@ use strict;
 use JSON::Streaming::Writer;
 use Data::Dumper;
 use Exporter 'import';
-our @EXPORT_OK = qw(CheckStart CheckBug);
+our @EXPORT_OK = qw(CheckInitialData CheckInvocations CheckResultData CheckRuleData);
 
-my $sarifVersion = "2.0.0-csd.2.beta.2018-10-10";
-my $sarifSchema = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-2.0.0-csd.2.beta.2018-10-10.json";
+my $sarifVersion = "2.0.0-csd.2.beta.2019-01-09";
+my $sarifSchema = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-2.0.0-csd.2.beta.2019-01-09.json";
+my $externalSchema = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-external-property-file-schema.json";
 
 # Instantiates the writer and store some data for later use
 sub new {
@@ -44,17 +45,76 @@ sub new {
     $self->{fh} = $fh;
     $self->{writer} = JSON::Streaming::Writer->for_stream($fh);
     $self->{writer}->pretty_output($self->{pretty});
+    $self->{output} = $output; # store output path for external files to adjust to
+    $self->{xwriters} = {}; # writers for external files
+    $self->{files_array} = ();
+    $self->{logicalLocations_array} = ();
 
     bless $self, $class;
     return $self;
 }
 
-# Set whether the writer pretty prints (meaning add indentation)
-sub SetPretty {
-    my ($self, $value) = @_;
+# Set options for program
+sub SetOptions {
+    my ($self, $options) = @_;
 
-    $self->{pretty} = $value;
-    $self->{writer}->pretty_output($self->{pretty});
+    # Set whether the writer pretty prints (meaning add indentation)
+    if (defined $options->{pretty}) {
+        $self->{pretty} = $options->{pretty};
+        $self->{writer}->pretty_output($self->{pretty});
+    }
+
+    if (defined $options->{error_level}) {
+        if ($options->{error_level} >= 0 && $options->{error_level} <= 2) {
+            $self->{error_level} = $options->{error_level};
+        }
+    }
+
+    print "\$options->{external}: \n";
+    print Dumper($options->{external});
+    if ($options->{external}) {
+        my %opened; # for where more than 1 object is externalized in same external file
+        foreach my $key (keys %{$options->{external}}) {
+            if ($options->{external}{$key}) {
+                if (exists $opened{$options->{external}{$key}{name}}) {
+                    my $value = $opened{$options->{external}{$key}{name}};
+                    $self->{external}{$key}{instanceGuid} = $self->{external}{$value}{instanceGuid};
+                    $self->{xwriters}{$key} = $self->{xwriters}{$value};
+                } else {
+                    if (defined $options->{external}{$key}{maxItems}) {
+                        $self->{external}{$key}{maxItems} = $options->{external}{$key}{maxItems};
+                        $self->{external}{$key}{currItems} = ();
+                        push @{$self->{external}{$key}{currItems}}, 0;
+
+                        # change file name to add a "-1" at the back (means the first external file)
+                        $self->{external}{$key}{originalFileName} = $options->{external}{$key}{name};
+                        if ($options->{external}{$key}{name} =~ /(.+)\.sarif/) {
+                            $options->{external}{$key}{name} = $1."-1".".sarif-external-properties";
+                        } else {
+                            die "Cannot determine proper file name for external file with property $key: $!";
+                        }
+                    }
+                    open(my $fh, '>:encoding(UTF-8)', $options->{external}{$key}{name}) or
+                    die "Can't open $options->{external}{$key}: $!";
+                    $self->{xwriters}{$key} = JSON::Streaming::Writer->for_stream($fh);
+                    $self->{xwriters}{$key}->pretty_output($self->{pretty});
+
+                    $self->{external}{$key}{fh} = $fh; # store fh to close later
+                    $self->{external}{$key}{instanceGuid} = ();
+                    push @{$self->{external}{$key}{instanceGuid}}, GetUuid();
+
+                    $opened{$options->{external}{$key}{name}} = $key;
+                }
+                $self->{external}{$key}{fileName} = ();
+                push @{$self->{external}{$key}{fileName}}, $options->{external}{$key}{name};
+            }
+        }
+        print "\%opened: \n";
+        print Dumper(\%opened);
+    }
+
+    print "\$self: \n";
+    print Dumper($self);
 }
 
 # Returns a boolean that shows whether the writer currently pretty prints
@@ -64,17 +124,6 @@ sub GetPretty {
     return $self->{pretty};
 }
 
-# Set how program handle errors
-sub SetErrorLevel {
-    my ($self, $error_level) = @_;
-
-    if (defined $error_level) {
-        if ($error_level == 0 || $error_level == 1 || $error_level == 2) {
-            $self->{error_level} = $error_level;
-        }
-    }
-}
-
 # Get the value of error_level
 sub GetErrorLevel {
     my ($self) = @_;
@@ -82,7 +131,7 @@ sub GetErrorLevel {
     return $self->{error_level};
 }
 
-sub CheckStart {
+sub CheckInitialData {
     my ($initialData) = @_;
     my @errors = ();
 
@@ -96,12 +145,24 @@ sub CheckStart {
     return \@errors;
 }
 
+# Start writing sarif file with data that comes before "runs"
+sub BeginFile {
+    my ($self) = @_;
+    my $writer = $self->{writer};
+
+    $writer->start_object(); # Start sarif object
+    $writer->add_property("version", $sarifVersion);
+    $writer->add_property("\$schema", $sarifSchema);
+    $writer->start_property("runs");
+    $writer->start_array();
+}
+
 # Start writing initial data to the sarif file and save some data for later use
-sub AddStartTag {
+sub BeginRun {
     my ($self, $initialData) = @_;
     my $writer = $self->{writer};
 
-    my $errors = CheckStart($initialData);
+    my $errors = CheckInitialData($initialData);
     if (@{$errors}) {
         if ($self->{error_level} != 0) {
             foreach (@{$errors}) {
@@ -114,9 +175,7 @@ sub AddStartTag {
         }
     }
 
-    $self->{PKGROOT} = AdjustPath(".", $initialData->{build_root_dir}, $initialData->{package_root_dir});
     $self->{package_root_dir} = $initialData->{package_root_dir};
-    $self->{conversion} = $initialData->{conversion};
 
     if ($initialData->{sha256hashes}) {
         $self->{sha256hashes} = $initialData->{sha256hashes};
@@ -124,12 +183,6 @@ sub AddStartTag {
     if ($initialData->{buildDir}) {
         $self->{buildDir} = $initialData->{buildDir};
     }
-
-    $writer->start_object(); # Start sarif object
-    $writer->add_property("version", $sarifVersion);
-    $writer->add_property("\$schema", $sarifSchema);
-    $writer->start_property("runs");
-    $writer->start_array();
 
     # start new run object
     $writer->start_object();
@@ -140,6 +193,14 @@ sub AddStartTag {
     $writer->end_object();
     $writer->end_property();
 
+    # Start external files
+    foreach my $key (keys %{$self->{external}}) {
+        # Find unique external writers
+        if (exists $self->{external}{$key}{fh}) {
+            StartExternal($self, $key);
+        }
+    }
+
     $writer->start_property("tool");
     $writer->start_object();
     $writer->add_property("name", $initialData->{tool_name});
@@ -147,86 +208,183 @@ sub AddStartTag {
     $writer->end_object();
     $writer->end_property();
 
+    AddPropertiesObject($self, $initialData);
+}
+
+# Start writing data to the external file
+sub StartExternal {
+    my ($self, $key) = @_;
+    my $writer = $self->{xwriters}{$key};
+
+    $writer->start_object(); # Start sarif object
+    $writer->add_property("version", $sarifVersion);
+    $writer->add_property("\$schema", $externalSchema);
+    $writer->add_property("instanceGuid", $self->{external}{$key}{instanceGuid}[-1]);
+}
+
+# Add the originalUriBaseIds object
+# expected baseIds hash:
+# baseIds => {
+#   HOMEROOT    => "...",
+#   BUILDROOT   => "...",
+#   PACKAGEROOT => "...",
+#   TOOLROOT    => "...",
+#   RESULTSROOT => "...",
+# }
+sub AddOriginalUriBaseIds {
+    my ($self, $baseIds) = @_;
+    my $writer = $self->{writer};
+
     $writer->start_property("originalUriBaseIds");
     $writer->start_object();
-    $writer->start_property("PKGROOT");
-    $writer->start_object();
-    $writer->add_property("uri", "file://".$self->{PKGROOT});
-    $writer->end_object();
-    $writer->end_property();
-    $writer->start_property("RESULTSROOT");
-    $writer->start_object();
-    $writer->add_property("uri", "file://".$initialData->{results_root_dir});
-    $writer->end_object();
-    $writer->end_property();
-    $writer->end_object();
-    $writer->end_property();
 
-    $writer->start_property("properties");
-    $writer->start_object();
-    $writer->add_property("packageName", $initialData->{package_name});
-    $writer->add_property("packageVersion", $initialData->{package_version});
-    $writer->end_object();
-    $writer->end_property();
-
-    # Data from assessment summary
-
-    if ($initialData->{invocations} && keys @{$initialData->{invocations}{assessments}} > 0) {
-        my $invocations = $initialData->{invocations}{assessments};
-        $writer->start_property("invocations");
-        $writer->start_array();
-
-        foreach my $assessment (@{$invocations}) {
+    foreach my $k (keys %{$baseIds}) {
+        if (defined $baseIds->{$k}) {
+            $writer->start_property($k);
             $writer->start_object();
-            CheckAndAddInvocation($self, "commandLine", $assessment->{commandLine});
-
-            if (@{$assessment->{args}} > 1) {
-                $writer->start_property("arguments");
-                $writer->start_array();
-                foreach my $arg (@{$assessment->{args}}) {
-                    $writer->add_string($arg);
-                }
-                $writer->end_array();
-                $writer->end_property();
-            }
-
-            CheckAndAddInvocation($self, "startTimeUtc", $assessment->{startTime});
-            CheckAndAddInvocation($self, "endTimeUtc", $assessment->{endTime});
-
-            $writer->start_property("workingDirectory");
-            $writer->start_object();
-            my $wd = AdjustPath($self->{PKGROOT}, ".", $assessment->{workingDirectory});
-            $writer->add_property("uri", $wd);
-            $writer->add_property("uriBaseId", "PKGROOT");
+            $writer->add_property("uri", $baseIds->{$k});
             $writer->end_object();
             $writer->end_property();
 
-            if (defined $assessment->{env}) {
-                $writer->start_property("environmentVariables");
-                $writer->start_object();
-                foreach my $key (keys %{$assessment->{env}}) {
-                    my $value = $assessment->{env}{$key};
-                    $writer->add_property($key, $value);
-                }
-                $writer->end_object();
-                $writer->end_property();
-            }
-
-            CheckAndAddInvocation($self, "exitCode", $assessment->{exitCode});
-            $writer->end_object();
+            # store it
+            $self->{baseIds}{$k} = $baseIds->{$k};
         }
-
-        $writer->end_array();
-        $writer->end_property();
     }
 
-    # Open results object
-    $writer->start_property("results");
-    $writer->start_array();
+    $writer->end_object();
+    $writer->end_property();
+}
+
+# Checks if new external file needs to be opened,
+# and opens a new one if so
+sub NewExternal {
+    my ($self, $key) = @_;
+    my $openNew = 0;
+
+    if ($self->{external}{$key} &&
+        exists $self->{external}{$key}{maxItems} && 
+        $self->{external}{$key}{maxItems} > 0 && 
+        $self->{external}{$key}{currItems}[-1] >= $self->{external}{$key}{maxItems}) {
+        $openNew = 1;
+    }
+
+    if ($openNew) {
+        EndPropertyArray($self, $key);
+        $self->{xwriters}{$key}->end_object();
+        close $self->{external}{$key}{fh};
+        
+        my $newName;
+        if ($self->{external}{$key}{originalFileName} =~ /(.+)\.sarif-external-properties/) {
+            my $num = @{$self->{external}{$key}{currItems}} + 1;
+            $newName = $1."-".$num.".sarif-external-properties";
+        }
+        open(my $fh, '>:encoding(UTF-8)', $newName) or
+        die "Can't open $newName: $!";
+        $self->{xwriters}{$key} = JSON::Streaming::Writer->for_stream($fh);
+        $self->{xwriters}{$key}->pretty_output($self->{pretty});
+
+        $self->{external}{$key}{fh} = $fh;
+        push @{$self->{external}{$key}{fileName}}, $newName;
+        push @{$self->{external}{$key}{instanceGuid}}, GetUuid();
+        push @{$self->{external}{$key}{currItems}}, 0;
+
+        StartExternal($self, $key);
+        BeginPropertyArray($self, $key);
+        return 1;
+    } else {
+        return 0;
+    }
+}
+
+# Checks that fields in the invocations array is filled
+sub CheckInvocations {
+    my ($invocations) = @_;
+    my @errors = ();
+
+    if (ref($invocations) ne "ARRAY") {
+        push @errors, "\$ruleData is expected to be an array";
+    }
+
+    foreach my $i (@{$invocations}) {
+        foreach my $key (qw/commandLine args startTimeUtc endTimeUtc workingDirectory env exitCode/) {
+            if (!defined $i->{$key}) {
+                push @errors, "Required key $key not found in an object in the invocations array";
+            }
+        }
+        if (ref($i->{args}) ne "ARRAY") {
+            push @errors, "The key args is expected to be an array";
+        }
+    }
+
+    return \@errors;
+}
+
+# Helper method to write the invocations object
+sub AddInvocations {
+    my ($self, $invocations) = @_;
+    my $writer;
+
+    if ($self->{xwriters}{invocations}) {
+        $writer = $self->{xwriters}{invocations};
+    } else {
+        $writer = $self->{writer};
+    }
+
+    BeginPropertyArray($self, "invocations");
+
+    foreach my $assessment (@{$invocations}) {
+        if (NewExternal($self, "invocations")) { # Creates a new external file is needed
+            $writer = $self->{xwriters}{invocations}; # Reassigns the writer variable
+        }
+
+        $writer->start_object();
+        CheckAndAddInvocation($writer, "commandLine", $assessment->{commandLine});
+
+        if ($assessment->{args} && @{$assessment->{args}} > 0) {
+            $writer->start_property("arguments");
+            $writer->start_array();
+            foreach my $arg (@{$assessment->{args}}) {
+                $writer->add_string($arg);
+            }
+            $writer->end_array();
+            $writer->end_property();
+        }
+
+        CheckAndAddInvocation($writer, "startTimeUtc", $assessment->{startTime});
+        CheckAndAddInvocation($writer, "endTimeUtc", $assessment->{endTime});
+
+        $writer->start_property("workingDirectory");
+        $writer->start_object();
+        my $wd = AdjustPath($self->{baseIds}{PACKAGEROOT}, ".", $assessment->{workingDirectory});
+        $writer->add_property("uri", $wd);
+        $writer->add_property("uriBaseId", "PACKAGEROOT");
+        $writer->end_object();
+        $writer->end_property();
+
+        if (defined $assessment->{env}) {
+            $writer->start_property("environmentVariables");
+            $writer->start_object();
+            foreach my $key (keys %{$assessment->{env}}) {
+                my $value = $assessment->{env}{$key};
+                $writer->add_property($key, $value);
+            }
+            $writer->end_object();
+            $writer->end_property();
+        }
+
+        CheckAndAddInvocation($writer, "exitCode", $assessment->{exitCode});
+        $writer->end_object();
+
+        if ($self->{external}{invocations} && exists $self->{external}{invocations}{currItems}) {
+            $self->{external}{invocations}{currItems}[-1] += 1;
+        }
+    }
+
+    EndPropertyArray($self, "invocations");
 }
 
 # Check if bugInstance hash contains required fields
-sub CheckBug {
+sub CheckResultData {
     my ($bugInstance) = @_;
     my @errors = ();
 
@@ -251,26 +409,59 @@ sub CheckBug {
     return \@errors;
 }
 
+
+# Start the results property and array
+sub BeginResults {
+    my ($self) = @_;
+    
+    BeginPropertyArray($self, "results");
+}
+
+# Starts an external property in an external file
+sub BeginPropertyArray {
+    my ($self, $key) = @_;
+    my $writer;
+
+    if ($self->{xwriters}{$key}) {
+        $writer = $self->{xwriters}{$key};
+        $writer->start_property("run.".$key);
+    } else {
+        $writer = $self->{writer};
+        $writer->start_property($key);
+    }
+    $writer->start_array();
+}
+
 # Called when data for a bug instance is gathered.
 # Writes out a result object, saves some data related to the bug
 # for later use.
-sub AddBugInstance {
+sub AddResult {
     my ($self, $bugData) = @_;
-    my $writer = $self->{writer};
+    my $writer;
 
-    my $errors = CheckBug($bugData);
+    NewExternal($self, "results"); # Starts a new external file if needed
+
+    if ($self->{xwriters}{results}) {
+        $writer = $self->{xwriters}{results};
+    } else {
+        $writer = $self->{writer};
+    }
+
+    my $errors = CheckResultData($bugData);
     if (@{$errors}) {
         if ($self->{error_level} != 0) {
             foreach (@{$errors}) {
                 print "$_\n";
             }
         }
-
         if ($self->{error_level} == 2) {
             die "Error with bugData hash. Program exiting."
         }
     }
 
+    if ($self->{external}{results} && exists $self->{external}{results}{currItems}) {
+        $self->{external}{results}{currItems}[-1] += 1;
+    }
     $writer->start_object();
 
     my @ruleId = ();
@@ -282,6 +473,12 @@ sub AddBugInstance {
     $writer->add_property("ruleId", join('/', @ruleId));
 
     $writer->add_property("level", "warning");
+
+    if (defined $bugData->{BugRank}) {
+        $writer->add_property("rank", $bugData->{BugRank});
+    } else {
+        $writer->add_property("rank", -1.0);
+    }
 
     my $message = $bugData->{BugMessage};
     $message =~ s/\n\n Bug\ Path:\s* $ $ .*\Z//xms;
@@ -298,16 +495,20 @@ sub AddBugInstance {
 
         foreach my $location (@{$bugData->{BugLocations}}) {
             if ($location->{primary}) {
+                my $filename = AdjustPath($self->{package_root_dir}, ".", $location->{SourceFile});
+                my $fileIndex;
+                if (exists $self->{files}{$location->{SourceFile}}) {
+                    $fileIndex = $self->{files}{$location->{SourceFile}};
+                } else {
+                    push @{$self->{files_array}}, $location->{SourceFile};
+                    $fileIndex = @{$self->{files_array}} - 1;
+                    $self->{files}{$location->{SourceFile}} = $fileIndex;
+                }
+
                 $writer->start_object();
                 $writer->start_property("physicalLocation");
                 $writer->start_object();
-                $writer->start_property("fileLocation");
-                $writer->start_object();
-                my $filename = AdjustPath($self->{package_root_dir}, ".", $location->{SourceFile});
-                $writer->add_property("uri", $filename);
-                $writer->add_property("uriBaseId", "PKGROOT");
-                $writer->end_object();
-                $writer->end_property();
+                AddFileLocationUri($writer, $filename, "PACKAGEROOT", $fileIndex);
 
                 if ((exists $location->{StartLine}) || (exists $location->{EndLine}) ||
                     (exists $location->{StartColumn}) || (exists $location->{EndColumn})) {
@@ -327,7 +528,7 @@ sub AddBugInstance {
                         $writer->add_property("endColumn", MakeInt($location->{EndColumn}));
                     }
 
-                    if ($self->{buildDir} && !exists $location->{StartLine} && !exists $location->{EndLine}) {
+                    if ($self->{buildDir} && defined $location->{StartLine} && defined $location->{EndLine}) {
                         my $snippetFile = AdjustPath(".", $self->{buildDir}, $location->{SourceFile});
                         if (-r $snippetFile) {
                             open (my $snippetFh, '<', $snippetFile) or die "Can't open $snippetFile: $!";
@@ -355,11 +556,26 @@ sub AddBugInstance {
                     }
 
                     $writer->end_object();
-                    $writer->end_property();
+                    $writer->end_property(); # end region
                 }
 
                 $writer->end_object();
-                $writer->end_property();
+                $writer->end_property(); # end physicalLocation
+
+                my $llIndex;
+                # Save ClassName
+                if (defined $bugData->{ClassName}) {
+                    if (exists $self->{logicalLocation}{$bugData->{ClassName}}) {
+                        $llIndex = $self->{logicalLocations}{$bugData->{ClassName}}{index};
+                    } else {
+                        push @{$self->{logicalLocations_array}}, $bugData->{ClassName};
+                        $llIndex = @{$self->{logicalLocations_array}} - 1;
+                        %{$self->{logicalLocations}{$bugData->{ClassName}}} = (
+                            index => $llIndex,
+                            kind => "type",
+                        );
+                    }
+                }
 
                 if (defined $location->{Explanation}) {
                     $writer->start_property("message");
@@ -370,27 +586,11 @@ sub AddBugInstance {
                 }
 
                 $writer->end_object();
-
-                # Store file uri to hash
-                $self->{files}{$location->{SourceFile}} = 1;
             }
         }
         $writer->end_array();
         $writer->end_property();
     }
-
-    $writer->start_property("conversionProvenance");
-    $writer->start_array();
-    $writer->start_object();
-    $writer->start_property("fileLocation");
-    $writer->start_object();
-    $writer->add_property("uri", $bugData->{AssessmentReportFile});
-    $writer->add_property("uriBaseId", "RESULTSROOT");
-    $writer->end_object();
-    $writer->end_property();
-    $writer->end_object();
-    $writer->end_array();
-    $writer->end_property();
 
     # Add CodeFlows object
     if (@{$bugData->{BugLocations}} > 1) {
@@ -402,7 +602,7 @@ sub AddBugInstance {
         $writer->start_object();
         $writer->start_property("locations");
         $writer->start_array();
-        AddThreadFlowsLocations($self, $bugData->{BugLocations});
+        AddThreadFlowsLocations($self, $writer, $bugData->{BugLocations});
         $writer->end_array();
         $writer->end_property();
         $writer->end_object();
@@ -413,17 +613,20 @@ sub AddBugInstance {
         $writer->end_property();
     }
 
-    # Save ClassName
-    if (defined $bugData->{ClassName}) {
-        $self->{ClassNames}{$bugData->{ClassName}} = 1;
-    }
+    $writer->start_property("provenance");
+    $writer->start_object();
+    $writer->add_property("invocationIndex", $bugData->{BuildId} - 1);
+    $writer->start_property("conversionSources");
+    $writer->start_array();
+    $writer->start_object();
+    AddFileLocationUri($writer, $bugData->{AssessmentReportFile}, "RESULTSROOT");
+    $writer->end_object();
+    $writer->end_array();
+    $writer->end_property();
+    $writer->end_object();
+    $writer->end_property();
 
-    # Save all method names
-    foreach my $method (@{$bugData->{Methods}}) {
-        $self->{Methods}{$method->{name}} = 1;
-    }
-
-    # Write data to property bad object
+    # Write data to property bag object
     if ($bugData->{BugSeverity} || $bugData->{CweIds}) {
         $writer->start_property("properties");
         $writer->start_object();
@@ -452,6 +655,101 @@ sub AddBugInstance {
 
 }
 
+# Ends the results array and property
+sub EndResults {
+    my ($self) = @_;
+    
+    EndPropertyArray($self, "results");
+}
+
+sub EndPropertyArray {
+    my ($self, $key) = @_;
+    my $writer;
+
+    if ($self->{xwriters}{$key}) {
+        $writer = $self->{xwriters}{$key};
+    } else {
+        $writer = $self->{writer};
+    }
+
+    $writer->end_array();
+    $writer->end_property();
+}
+
+sub CheckRuleData {
+    my ($ruleData) = @_;
+    my @errors = ();
+    
+    if (ref($ruleData) ne "ARRAY") {
+        push @errors, "\$ruleData is expected to be an array";
+    }
+
+    foreach my $rule (@{$ruleData}) {
+        foreach my $key (qw/id fullDescription/) {
+            if (!defined $rule->{$key}) {
+                push @errors, "Required key $key not found in an object in the ruleData array";
+            }
+        }
+    }
+
+    return \@errors;
+}
+
+# Adds the resouces object
+sub AddResources {
+    my ($self, $ruleData) = @_;
+    my $writer;
+
+    if ($self->{xwriters}{resources}) {
+        $writer = $self->{xwriters}{resources};
+    } else {
+        $writer = $self->{writer};
+    }
+
+    my $errors = CheckRuleData($ruleData);
+    if (@{$errors}) {
+        if ($self->{error_level} != 0) {
+            foreach (@{$errors}) {
+                print "$_\n";
+            }
+        }
+
+        if ($self->{error_level} == 2) {
+            die "Error with ruleData hash. Program exiting."
+        }
+    }
+
+    $writer->start_property("resources");
+    $writer->start_object();
+    $writer->start_property("rules");
+    $writer->start_array();
+
+    foreach my $rule (@{$ruleData}) {
+        $writer->start_object();
+        $writer->add_property("id", $rule->{id});
+        $writer->add_property("defaultLevel", $rule->{defaultLevel}) if (defined $rule->{defaultLevel});
+        $writer->add_property("defaultRank", $rule->{defaultRank}) if (defined $rule->{defaultRank});
+        if (defined $rule->{shortDescription}) {
+            $writer->start_property("shortDescription");
+            $writer->start_object();
+            $writer->add_property("text", $rule->{shortDescription});
+            $writer->end_object();
+            $writer->end_property();
+        }
+        $writer->start_property("fullDescription");
+        $writer->start_object();
+        $writer->add_property("text", $rule->{fullDescription});
+        $writer->end_object();
+        $writer->end_property();
+        $writer->end_object();
+    }
+
+    $writer->end_array();
+    $writer->end_property();
+    $writer->end_object();
+    $writer->end_property();
+}
+
 # This method is supported in ScarfXmlWriter, but is not
 # currently supported by SarifJsonWriter
 sub CheckMetric {
@@ -477,22 +775,136 @@ sub AddEndTag {
 }
 
 # Closes results array, write data saved from AddBugInstance()
-# and finishes writing the SARIF file
-sub Close {
+sub EndRun {
+    my ($self, $endData) = @_;
+    my $writer = $self->{writer};
+
+    #AddLogicalLocations($self);
+    AddFilesObject($self, $endData->{sha256hashes});
+    if (keys %{$self->{xwriters}} > 0) {
+        AddExternalPropertyFiles($self);
+    }
+    AddConversionObject($self, $endData->{conversion});
+
+    $writer->end_object(); # end run object
+
+    foreach my $key (keys %{$self->{external}}) {
+        if (exists $self->{external}{$key}{fh}) {
+            $self->{xwriters}{$key}->end_object();
+            close $self->{external}{$key}{fh};
+        }
+    }
+}
+
+sub EndFile {
     my ($self) = @_;
     my $writer = $self->{writer};
 
     $writer->end_array();
     $writer->end_property();
-    AddLogicalLocations($self);
-    AddFilesObject($self);
-    AddConversionObject($self);
     $writer->end_object();
 
-    $writer->end_array();
-    $writer->end_property();
-    $writer->end_object;
+    print Dumper($self);
+
     close $self->{fh};
+}
+
+# Helper method to write the external property files object
+sub AddExternalPropertyFiles {
+    my ($self) = @_;
+    my $writer = $self->{writer};
+
+    $writer->start_property("externalPropertyFiles");
+    $writer->start_object();
+
+    my @externalizableObject = qw/
+        conversion
+        graphs
+        properties
+        resources/;
+
+    my @externalizableArray = qw/
+        files
+        invocations
+        results
+        logicalLocations/;
+
+    foreach my $e (@externalizableObject) {
+        if ($self->{xwriters}{$e}) {
+            $writer->start_property($e);
+            $writer->start_object();
+
+            my $outputDir = "";
+            if ($self->{output} =~ /(.*)\/.+\.sarif/) {
+                $outputDir = $1;
+            }
+            my $filePath = AdjustPath($outputDir, ".", $self->{external}{$e}{fileName}[0]);
+            AddFileLocationUri($writer, $filePath);
+            $writer->add_property("instanceGuid", $self->{external}{$e}{instanceGuid}[0]);
+            $writer->end_object();
+            $writer->end_property();
+        }
+    }
+
+    foreach my $e (@externalizableArray) {
+        if ($self->{xwriters}{$e}) {
+            $writer->start_property($e);
+            $writer->start_array();
+
+            foreach my $i (0 .. $#{$self->{external}{$e}{fileName}}) {
+                $writer->start_object();
+                my $outputDir = "";
+                if ($self->{output} =~ /(.*)\/.+\.sarif/) {
+                    $outputDir = $1;
+                }
+                my $filePath = AdjustPath($outputDir, ".", $self->{external}{$e}{fileName}[$i]);
+                AddFileLocationUri($writer, $filePath);
+                $writer->add_property("instanceGuid", $self->{external}{$e}{instanceGuid}[$i]);
+                $writer->end_object();
+            }
+
+            $writer->end_array();
+            $writer->end_property();
+        }
+    }
+
+    $writer->end_object();
+    $writer->end_property();
+}
+
+# Helper method to write a fileLocation object
+# if only 1 property -> adds only uri property
+# else -> adds uri, uriBaseId and fileIndex
+sub AddFileLocationUri {
+    my ($writer, $uri, $uriBaseId, $fileIndex) = @_;
+
+    $writer->start_property("fileLocation");
+    $writer->start_object();
+    $writer->add_property("uri", $uri);
+    $writer->add_property("uriBaseId", $uriBaseId) if (defined $uriBaseId);
+    $writer->add_property("fileIndex", $fileIndex) if (defined $fileIndex);
+    $writer->end_object();
+    $writer->end_property();
+}
+
+# Helper method to write the properties object
+sub AddPropertiesObject {
+    my ($self, $initialData) = @_;
+    my $writer;
+
+    if ($self->{xwriters}{properties}) {
+        $writer = $self->{xwriters}{properties};
+        $writer->start_property("run.properties");
+    } else {
+        $writer = $self->{writer};
+        $writer->start_property("properties");
+    }
+
+    $writer->start_object();
+    $writer->add_property("packageName", $initialData->{package_name});
+    $writer->add_property("packageVersion", $initialData->{package_version});
+    $writer->end_object();
+    $writer->end_property();
 }
 
 # Only method to call after new() when there is a failure.
@@ -588,13 +1000,13 @@ sub AddFailure {
 # Helper function to check if a given property in invocation exists and
 # write it if it does.
 sub CheckAndAddInvocation {
-    my ($self, $propertyName, $propertyValue) = @_;
+    my ($writer, $propertyName, $propertyValue) = @_;
 
     if (defined $propertyValue) {
         if ($propertyName eq "exitCode") {
-            $self->{writer}->add_property($propertyName, MakeInt($propertyValue));
+            $writer->add_property($propertyName, MakeInt($propertyValue));
         } else {
-            $self->{writer}->add_property($propertyName, $propertyValue);
+            $writer->add_property($propertyName, $propertyValue);
         }
     }
 }
@@ -602,52 +1014,55 @@ sub CheckAndAddInvocation {
 # Helper function to write the logicalLocations object
 sub AddLogicalLocations {
     my ($self) = @_;
-    my $writer = $self->{writer};
+    my $writer;
 
-    if ($self->{ClassNames} || $self->{Methods}) {
+    if ($self->{xwriters}{logicalLocations}) {
+        $writer = $self->{xwriters}{logicalLocations};
+        $writer->start_property("run.logicalLocations");
+    } else {
+        $writer = $self->{writer};
         $writer->start_property("logicalLocations");
-        $writer->start_object();
-
-        foreach my $className (keys %{$self->{ClassNames}}) {
-            $writer->start_property($className);
-            $writer->start_object();
-            $writer->add_property("name", $className);
-            $writer->add_property("kind", "type");
-            $writer->end_object();
-            $writer->end_property();
-        }
-
-        foreach my $method (keys %{$self->{Methods}}) {
-            $writer->start_property($method);
-            $writer->start_object();
-            $writer->add_property("name", $method);
-            $writer->add_property("kind", "function");
-            $writer->end_object();
-            $writer->end_property();
-        }
-
-        $writer->end_object();
-        $writer->end_property();
     }
+
+    $writer->start_array();
+
+    foreach my $l (@{$self->{logicalLocations_array}}) {
+        $writer->start_object();
+        $writer->add_property("name", $l);
+        $writer->add_property("kind", $self->{logicalLocations}{$l}{kind});
+        $writer->end_object();
+    }
+
+    $writer->end_array();
+    $writer->end_property();
 }
 
 # Helper function to write the Files object
 sub AddFilesObject {
-    my ($self) = @_;
-    my $writer = $self->{writer};
+    my ($self, $sha256hashes) = @_;
+    my $writer;
 
-    if ($self->{files}) {
-        $writer->start_property("files");
-        $writer->start_object();
-        foreach my $file (keys %{$self->{files}}) {
-            my $filename = AdjustPath($self->{package_root_dir}, ".", $file);
-            my $hashPath = "build/".$file;
+    if ($self->{xwriters}{files}) {
+        $writer = $self->{xwriters}{files};
+    } else {
+        $writer = $self->{writer};
+    }
 
-            $writer->start_property($filename);
+    BeginPropertyArray($self, "files");
+
+    if ($self->{files_array} && @{$self->{files_array}} > 0) {
+        foreach my $file (@{$self->{files_array}}) {
+            if (NewExternal($self, "files")) { # Creates a new external file is needed
+                $writer = $self->{xwriters}{files}; # Reassigns the writer variable
+            }
+
             $writer->start_object();
+            my $filename = AdjustPath($self->{package_root_dir}, ".", $file);
+            AddFileLocationUri($writer, $filename, "PACKAGEROOT");
 
-            if ($self->{sha256hashes}) {
-                my $sha256 = FindSha256Hash($self->{sha256hashes}, $hashPath);
+            my $hashPath = "build/".$file;
+            if ($sha256hashes) {
+                my $sha256 = FindSha256Hash($sha256hashes, $hashPath);
                 if (defined $sha256) {
                     $writer->start_property("hashes");
                     $writer->start_object();
@@ -658,13 +1073,15 @@ sub AddFilesObject {
                     print "Unable to find sha256 hash for $file\n";
                 }
             }
-
             $writer->end_object();
-            $writer->end_property();
+
+            if ($self->{external}{files} && exists $self->{external}{files}{currItems}) {
+                $self->{external}{files}{currItems}[-1] += 1;
+            }
         }
-        $writer->end_object();
-        $writer->end_property();
     }
+
+    EndPropertyArray($self, "files");
 }
 
 # Helper function to find the sha256 hash for a file
@@ -682,11 +1099,17 @@ sub FindSha256Hash {
 
 # Helper function to write the conversion object
 sub AddConversionObject {
-    my ($self) = @_;
-    my $writer = $self->{writer};
-    my $conversion = $self->{conversion};
+    my ($self, $conversion) = @_;
+    my $writer;
 
-    $writer->start_property("conversion");
+    if ($self->{xwriters}{conversion}) {
+        $writer = $self->{xwriters}{conversion};
+        $writer->start_property("run.conversion");
+    } else {
+        $writer = $self->{writer};
+        $writer->start_property("conversion");
+    }
+
     $writer->start_object();
     $writer->start_property("tool");
     $writer->start_object();
@@ -734,8 +1157,7 @@ sub AddConversionObject {
 
 # Helper function to write the threadFLowLocations object
 sub AddThreadFlowsLocations {
-    my ($self, $locations) = @_;
-    my $writer = $self->{writer};
+    my ($self, $writer, $locations) = @_;
 
     foreach my $location (@{$locations}) {
         $writer->start_object();
@@ -745,13 +1167,17 @@ sub AddThreadFlowsLocations {
         $writer->start_object();
         $writer->start_property("physicalLocation");
         $writer->start_object();
-        $writer->start_property("fileLocation");
-        $writer->start_object();
+
         my $filename = AdjustPath($self->{package_root_dir}, ".", $location->{SourceFile});
-        $writer->add_property("uri", $filename);
-        $writer->add_property("uriBaseId", "PKGROOT");
-        $writer->end_object();
-        $writer->end_property();
+        my $fileIndex;
+        if (exists $self->{files}{$location->{SourceFile}}) {
+            $fileIndex = $self->{files}{$location->{SourceFile}};
+        } else {
+            push @{$self->{files_array}}, $location->{SourceFile};
+            $fileIndex = @{$self->{files_array}} - 1;
+            $self->{files}{$location->{SourceFile}} = $fileIndex;
+        }
+        AddFileLocationUri($writer, $filename, "PACKAGEROOT", $fileIndex);
 
         if ((exists $location->{StartLine}) || (exists $location->{EndLine}) ||
             (exists $location->{StartColumn}) || (exists $location->{EndColumn})) {
@@ -769,8 +1195,36 @@ sub AddThreadFlowsLocations {
             if (exists $location->{EndColumn}) {
                 $writer->add_property("endColumn", MakeInt($location->{EndColumn}));
             }
+
+            if ($self->{buildDir} && defined $location->{StartLine} && defined $location->{EndLine}) {
+                my $snippetFile = AdjustPath(".", $self->{buildDir}, $location->{SourceFile});
+                if (-r $snippetFile) {
+                    open (my $snippetFh, '<', $snippetFile) or die "Can't open $snippetFile: $!";
+
+                    my $count = 1;
+                    my $snippetString = "";
+                    while(<$snippetFh>) {
+                        if ($count > $location->{EndLine}) {
+                            $writer->start_property("snippet");
+                            $writer->start_object();
+                            $writer->add_property("text", $snippetString);
+                            $writer->end_object();
+                            $writer->end_property();
+                            close $snippetFh;
+                            last;
+                        }
+                        if ($count >= $location->{StartLine}) {
+                            $snippetString = $snippetString.$_;
+                        }
+                        $count++;
+                    }
+                } else {
+                    print "Unable to find $snippetFile\n";
+                }
+            }
+
             $writer->end_object();
-            $writer->end_property();
+            $writer->end_property(); # end region
         }
 
         $writer->end_object();
@@ -867,6 +1321,13 @@ sub ConvertEpoch {
     } else {
         return sprintf("%d-%02d-%02d%s%02d:%02d:%02d%s", $year, $month, $day, "T", $hour, $min, $sec, "Z");
     }
+}
+
+# Generate Uuid
+sub GetUuid {
+    my $s = `uuidgen`;
+    chomp $s;
+    return $s;
 }
 
 # Make the integer that is in a string into integer
