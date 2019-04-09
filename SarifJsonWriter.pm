@@ -21,11 +21,12 @@ package SarifJsonWriter;
 use strict;
 use JSON::Streaming::Writer;
 use Data::Dumper;
+use Digest::file qw(digest_file_hex);
 use Exporter 'import';
 our @EXPORT_OK = qw(CheckInitialData CheckInvocations CheckResultData CheckRuleData);
 
-my $sarifVersion = "2.0.0-csd.2.beta.2019-01-09";
-my $sarifSchema = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-2.0.0-csd.2.beta.2019-01-09.json";
+my $sarifVersion = "2.0.0-csd.2.beta.2019-04-03";
+my $sarifSchema = "https://raw.githubusercontent.com/Microsoft/sarif-sdk/master/src/Sarif/Schemata/sarif-schema.json";
 my $externalSchema = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-external-property-file-schema.json";
 
 # Instantiates the writer and store some data for later use
@@ -47,8 +48,9 @@ sub new {
     $self->{writer}->pretty_output($self->{pretty});
     $self->{output} = $output; # store output path for external files to adjust to
     $self->{xwriters} = {}; # writers for external files
-    $self->{files_array} = ();
+    $self->{artifacts_array} = ();
     $self->{logicalLocations_array} = ();
+    $self->{numBugs} = 0; # keep track of number of results added for the result parser to print the weaknesses count file
 
     bless $self, $class;
     return $self;
@@ -70,8 +72,6 @@ sub SetOptions {
         }
     }
 
-    print "\$options->{external}: \n";
-    print Dumper($options->{external});
     if ($options->{external}) {
         my %opened; # for where more than 1 object is externalized in same external file
         foreach my $key (keys %{$options->{external}}) {
@@ -109,12 +109,7 @@ sub SetOptions {
                 push @{$self->{external}{$key}{fileName}}, $options->{external}{$key}{name};
             }
         }
-        print "\%opened: \n";
-        print Dumper(\%opened);
     }
-
-    print "\$self: \n";
-    print Dumper($self);
 }
 
 # Returns a boolean that shows whether the writer currently pretty prints
@@ -135,7 +130,7 @@ sub CheckInitialData {
     my ($initialData) = @_;
     my @errors = ();
 
-    foreach my $key (qw/ build_root_dir package_root_dir results_root_dir uuid tool_name
+    foreach my $key (qw/ build_root_dir package_root_dir uuid tool_name
                          tool_version package_name package_version/) {
         if (!defined $initialData->{$key}) {
             push @errors, "Required key $key not found in initialData";
@@ -166,7 +161,7 @@ sub BeginRun {
     if (@{$errors}) {
         if ($self->{error_level} != 0) {
             foreach (@{$errors}) {
-                print "$_\n";
+                print STDERR "$_\n";
             }
         }
 
@@ -175,6 +170,7 @@ sub BeginRun {
         }
     }
 
+    $self->{build_root_dir} = $initialData->{build_root_dir};
     $self->{package_root_dir} = $initialData->{package_root_dir};
 
     if ($initialData->{sha256hashes}) {
@@ -187,9 +183,9 @@ sub BeginRun {
     # start new run object
     $writer->start_object();
 
-    $writer->start_property("id");
+    $writer->start_property("automationDetails");
     $writer->start_object();
-    $writer->add_property("instanceGuid", $initialData->{uuid});
+    $writer->add_property("guid", $initialData->{uuid});
     $writer->end_object();
     $writer->end_property();
 
@@ -203,8 +199,12 @@ sub BeginRun {
 
     $writer->start_property("tool");
     $writer->start_object();
+    $writer->start_property("driver");
+    $writer->start_object();
     $writer->add_property("name", $initialData->{tool_name});
     $writer->add_property("version", $initialData->{tool_version});
+    $writer->end_object();
+    $writer->end_property();
     $writer->end_object();
     $writer->end_property();
 
@@ -223,7 +223,7 @@ sub StartExternal {
 }
 
 # Add the originalUriBaseIds object
-# expected baseIds hash:
+# expected baseIds hash (an example format):
 # baseIds => {
 #   HOMEROOT    => "...",
 #   BUILDROOT   => "...",
@@ -238,8 +238,12 @@ sub AddOriginalUriBaseIds {
     $writer->start_property("originalUriBaseIds");
     $writer->start_object();
 
-    foreach my $k (keys %{$baseIds}) {
+    foreach my $k (sort keys %{$baseIds}) {
         if (defined $baseIds->{$k}) {
+            # uri must end in a '/'
+            if ($baseIds->{$k} !~ /\/$/) {
+                $baseIds->{$k} = $baseIds->{$k} . "/";
+            }
             $writer->start_property($k);
             $writer->start_object();
             $writer->add_property("uri", $baseIds->{$k});
@@ -350,8 +354,8 @@ sub AddInvocations {
             $writer->end_property();
         }
 
-        CheckAndAddInvocation($writer, "startTimeUtc", $assessment->{startTime});
-        CheckAndAddInvocation($writer, "endTimeUtc", $assessment->{endTime});
+        CheckAndAddInvocation($writer, "startTimeUtc", ConvertEpoch($assessment->{startTime}));
+        CheckAndAddInvocation($writer, "endTimeUtc", ConvertEpoch($assessment->{endTime}));
 
         $writer->start_property("workingDirectory");
         $writer->start_object();
@@ -364,7 +368,7 @@ sub AddInvocations {
         if (defined $assessment->{env}) {
             $writer->start_property("environmentVariables");
             $writer->start_object();
-            foreach my $key (keys %{$assessment->{env}}) {
+            foreach my $key (sort keys %{$assessment->{env}}) {
                 my $value = $assessment->{env}{$key};
                 $writer->add_property($key, $value);
             }
@@ -394,11 +398,16 @@ sub CheckResultData {
         }
     }
 
-    foreach my $location (@{$bugInstance->{BugLocations}}) {
-        if (!defined $location->{SourceFile}) {
-            push @errors, "Required key SourceFile not found in a BugLocation object";
+    if (defined $bugInstance->{BugLocations}) {
+        foreach my $location (@{$bugInstance->{BugLocations}}) {
+            if (!defined $location->{SourceFile}) {
+                push @errors, "Required key SourceFile not found in a BugLocation object";
+            }
         }
+    } else {
+        push @errors, "Required key BugLocations not found in bugInstance";
     }
+    
 
     foreach my $method (@{$bugInstance->{Methods}}) {
         if (!defined $method->{name}) {
@@ -451,7 +460,7 @@ sub AddResult {
     if (@{$errors}) {
         if ($self->{error_level} != 0) {
             foreach (@{$errors}) {
-                print "$_\n";
+                print STDERR "$_\n";
             }
         }
         if ($self->{error_level} == 2) {
@@ -494,70 +503,23 @@ sub AddResult {
         $writer->start_array();
 
         foreach my $location (@{$bugData->{BugLocations}}) {
-            if ($location->{primary}) {
-                my $filename = AdjustPath($self->{package_root_dir}, ".", $location->{SourceFile});
-                my $fileIndex;
-                if (exists $self->{files}{$location->{SourceFile}}) {
-                    $fileIndex = $self->{files}{$location->{SourceFile}};
+            if ($location->{primary} && $location->{primary} ne 'false') {
+                my $artifactname = AdjustPath($self->{package_root_dir}, ".", $location->{SourceFile});
+                my $artifactIndex;
+                if (exists $self->{artifacts}{$location->{SourceFile}}) {
+                    $artifactIndex = $self->{artifacts}{$location->{SourceFile}};
                 } else {
-                    push @{$self->{files_array}}, $location->{SourceFile};
-                    $fileIndex = @{$self->{files_array}} - 1;
-                    $self->{files}{$location->{SourceFile}} = $fileIndex;
+                    push @{$self->{artifacts_array}}, $location->{SourceFile};
+                    $artifactIndex = @{$self->{artifacts_array}} - 1;
+                    $self->{artifacts}{$location->{SourceFile}} = $artifactIndex;
                 }
 
                 $writer->start_object();
                 $writer->start_property("physicalLocation");
                 $writer->start_object();
-                AddFileLocationUri($writer, $filename, "PACKAGEROOT", $fileIndex);
+                AddArtifactLocationUri($writer, $artifactname, "PACKAGEROOT", $artifactIndex);
 
-                if ((exists $location->{StartLine}) || (exists $location->{EndLine}) ||
-                    (exists $location->{StartColumn}) || (exists $location->{EndColumn})) {
-                    $writer->start_property("region");
-                    $writer->start_object();
-
-                    if (exists $location->{StartLine}) {
-                        $writer->add_property("startLine", MakeInt($location->{StartLine}));
-                    }
-                    if (exists $location->{EndLine}) {
-                        $writer->add_property("endLine", MakeInt($location->{EndLine}));
-                    }
-                    if (exists $location->{StartColumn}) {
-                        $writer->add_property("startColumn", MakeInt($location->{StartColumn}));
-                    }
-                    if (exists $location->{EndColumn}) {
-                        $writer->add_property("endColumn", MakeInt($location->{EndColumn}));
-                    }
-
-                    if ($self->{buildDir} && defined $location->{StartLine} && defined $location->{EndLine}) {
-                        my $snippetFile = AdjustPath(".", $self->{buildDir}, $location->{SourceFile});
-                        if (-r $snippetFile) {
-                            open (my $snippetFh, '<', $snippetFile) or die "Can't open $snippetFile: $!";
-
-                            my $count = 1;
-                            my $snippetString = "";
-                            while(<$snippetFh>) {
-                                if ($count > $location->{EndLine}) {
-                                    $writer->start_property("snippet");
-                                    $writer->start_object();
-                                    $writer->add_property("text", $snippetString);
-                                    $writer->end_object();
-                                    $writer->end_property();
-                                    close $snippetFh;
-                                    last;
-                                }
-                                if ($count >= $location->{StartLine}) {
-                                    $snippetString = $snippetString.$_;
-                                }
-                                $count++;
-                            }
-                        } else {
-                            print "Unable to find $snippetFile\n";
-                        }
-                    }
-
-                    $writer->end_object();
-                    $writer->end_property(); # end region
-                }
+                AddRegionObject($self, $writer, $location);
 
                 $writer->end_object();
                 $writer->end_property(); # end physicalLocation
@@ -619,7 +581,7 @@ sub AddResult {
     $writer->start_property("conversionSources");
     $writer->start_array();
     $writer->start_object();
-    AddFileLocationUri($writer, $bugData->{AssessmentReportFile}, "RESULTSROOT");
+    AddArtifactLocationUri($writer, $bugData->{AssessmentReportFile}, "RESULTSROOT");
     $writer->end_object();
     $writer->end_array();
     $writer->end_property();
@@ -652,7 +614,7 @@ sub AddResult {
     }
 
     $writer->end_object();
-
+    $self->{numBugs} += 1;
 }
 
 # Ends the results array and property
@@ -710,7 +672,7 @@ sub AddResources {
     if (@{$errors}) {
         if ($self->{error_level} != 0) {
             foreach (@{$errors}) {
-                print "$_\n";
+                print STDERR "$_\n";
             }
         }
 
@@ -774,17 +736,23 @@ sub AddEndTag {
 
 }
 
+sub GetNumBugs {
+    my ($self) = @_;
+
+    return $self->{numBugs};
+}
+
 # Closes results array, write data saved from AddBugInstance()
 sub EndRun {
     my ($self, $endData) = @_;
     my $writer = $self->{writer};
 
     #AddLogicalLocations($self);
-    AddFilesObject($self, $endData->{sha256hashes});
+    AddArtifactsObject($self, $endData->{sha256hashes});
     if (keys %{$self->{xwriters}} > 0) {
         AddExternalPropertyFiles($self);
     }
-    AddConversionObject($self, $endData->{conversion});
+    AddConversionObject($self, $endData->{conversion}) if defined $endData->{conversion};
 
     $writer->end_object(); # end run object
 
@@ -804,8 +772,6 @@ sub EndFile {
     $writer->end_property();
     $writer->end_object();
 
-    print Dumper($self);
-
     close $self->{fh};
 }
 
@@ -814,7 +780,7 @@ sub AddExternalPropertyFiles {
     my ($self) = @_;
     my $writer = $self->{writer};
 
-    $writer->start_property("externalPropertyFiles");
+    $writer->start_property("externalPropertyFileReferences");
     $writer->start_object();
 
     my @externalizableObject = qw/
@@ -824,14 +790,18 @@ sub AddExternalPropertyFiles {
         resources/;
 
     my @externalizableArray = qw/
-        files
+        artifacts
         invocations
         results
         logicalLocations/;
 
     foreach my $e (@externalizableObject) {
         if ($self->{xwriters}{$e}) {
-            $writer->start_property($e);
+            if ($e eq "properties") {
+                $writer->start_property("externalizedProperties")
+            } else {
+                $writer->start_property($e);
+            }
             $writer->start_object();
 
             my $outputDir = "";
@@ -839,7 +809,7 @@ sub AddExternalPropertyFiles {
                 $outputDir = $1;
             }
             my $filePath = AdjustPath($outputDir, ".", $self->{external}{$e}{fileName}[0]);
-            AddFileLocationUri($writer, $filePath);
+            AddArtifactLocationUri($writer, $filePath);
             $writer->add_property("instanceGuid", $self->{external}{$e}{instanceGuid}[0]);
             $writer->end_object();
             $writer->end_property();
@@ -858,7 +828,7 @@ sub AddExternalPropertyFiles {
                     $outputDir = $1;
                 }
                 my $filePath = AdjustPath($outputDir, ".", $self->{external}{$e}{fileName}[$i]);
-                AddFileLocationUri($writer, $filePath);
+                AddArtifactLocationUri($writer, $filePath);
                 $writer->add_property("instanceGuid", $self->{external}{$e}{instanceGuid}[$i]);
                 $writer->end_object();
             }
@@ -874,15 +844,15 @@ sub AddExternalPropertyFiles {
 
 # Helper method to write a fileLocation object
 # if only 1 property -> adds only uri property
-# else -> adds uri, uriBaseId and fileIndex
-sub AddFileLocationUri {
-    my ($writer, $uri, $uriBaseId, $fileIndex) = @_;
+# else -> adds uri, uriBaseId and artifactIndex
+sub AddArtifactLocationUri {
+    my ($writer, $uri, $uriBaseId, $artifactIndex) = @_;
 
-    $writer->start_property("fileLocation");
+    $writer->start_property("artifactLocation");
     $writer->start_object();
     $writer->add_property("uri", $uri);
     $writer->add_property("uriBaseId", $uriBaseId) if (defined $uriBaseId);
-    $writer->add_property("fileIndex", $fileIndex) if (defined $fileIndex);
+    $writer->add_property("artifactIndex", $artifactIndex) if (defined $artifactIndex);
     $writer->end_object();
     $writer->end_property();
 }
@@ -926,7 +896,11 @@ sub AddFailure {
     # start tool object
     $writer->start_property("tool");
     $writer->start_object();
+    $writer->start_property("driver");
+    $writer->start_object();
     $writer->add_property("name", $data->{tool}{tool_name});
+    $writer->end_object();
+    $writer->end_property();
     $writer->end_object();
     $writer->end_property();
 
@@ -935,8 +909,12 @@ sub AddFailure {
     $writer->start_object();
     $writer->start_property("tool");
     $writer->start_object();
+    $writer->start_property("driver");
+    $writer->start_object();
     $writer->add_property("name", $conversion->{tool_name});
     $writer->add_property("version", $conversion->{tool_version});
+    $writer->end_object();
+    $writer->end_property();
     $writer->end_object();
     $writer->end_property();
 
@@ -1038,50 +1016,119 @@ sub AddLogicalLocations {
 }
 
 # Helper function to write the Files object
-sub AddFilesObject {
+sub AddArtifactsObject {
     my ($self, $sha256hashes) = @_;
     my $writer;
 
-    if ($self->{xwriters}{files}) {
-        $writer = $self->{xwriters}{files};
+    if ($self->{xwriters}{artifacts}) {
+        $writer = $self->{xwriters}{artifacts};
     } else {
         $writer = $self->{writer};
     }
 
-    BeginPropertyArray($self, "files");
+    BeginPropertyArray($self, "artifacts");
 
-    if ($self->{files_array} && @{$self->{files_array}} > 0) {
-        foreach my $file (@{$self->{files_array}}) {
-            if (NewExternal($self, "files")) { # Creates a new external file is needed
-                $writer = $self->{xwriters}{files}; # Reassigns the writer variable
+    if ($self->{artifacts_array} && @{$self->{artifacts_array}} > 0) {
+        foreach my $artifact (@{$self->{artifacts_array}}) {
+            if (NewExternal($self, "artifacts")) { # Creates a new external file is needed
+                $writer = $self->{xwriters}{artifacts}; # Reassigns the writer variable
             }
 
             $writer->start_object();
-            my $filename = AdjustPath($self->{package_root_dir}, ".", $file);
-            AddFileLocationUri($writer, $filename, "PACKAGEROOT");
+            my $artifactname = AdjustPath($self->{package_root_dir}, ".", $artifact);
+            AddArtifactLocationUri($writer, $artifactname, "PACKAGEROOT");
 
-            my $hashPath = "build/".$file;
+            my $sha256;
             if ($sha256hashes) {
-                my $sha256 = FindSha256Hash($sha256hashes, $hashPath);
-                if (defined $sha256) {
-                    $writer->start_property("hashes");
-                    $writer->start_object();
-                    $writer->add_property("sha-256", $sha256);
-                    $writer->end_object();
-                    $writer->end_property();
-                } else {
-                    print "Unable to find sha256 hash for $file\n";
+                # if a file containing all the hashes is provided
+                my $hashPath = "build/".$artifact;
+                $sha256 = FindSha256Hash($sha256hashes, $hashPath);
+            } else {
+                # no file containing all the hashes is provided, so attempt to compute it myself
+                my $hashPath = AdjustPath($self->{package_root_dir}, $self->{build_root_dir}, $artifact);
+                if (-r $hashPath) {
+                    $sha256 = digest_file_hex($hashPath, "SHA-256");
                 }
             }
+
+            if ($sha256) {
+                $writer->start_property("hashes");
+                $writer->start_object();
+                $writer->add_property("sha-256", $sha256);
+                $writer->end_object();
+                $writer->end_property();
+            } else {
+                print STDERR "Unable to find sha256 hash for $artifact\n";
+            }
+
             $writer->end_object();
 
-            if ($self->{external}{files} && exists $self->{external}{files}{currItems}) {
-                $self->{external}{files}{currItems}[-1] += 1;
+            if ($self->{external}{artifacts} && exists $self->{external}{artifacts}{currItems}) {
+                $self->{external}{artifacts}{currItems}[-1] += 1;
             }
         }
     }
 
-    EndPropertyArray($self, "files");
+    EndPropertyArray($self, "artifacts");
+}
+
+# Helper function to write the region object
+sub AddRegionObject {
+    my ($self, $writer, $location) = @_;
+
+    if ((exists $location->{StartLine}) || (exists $location->{EndLine}) ||
+        (exists $location->{StartColumn}) || (exists $location->{EndColumn})) {
+        $writer->start_property("region");
+        $writer->start_object();
+
+        if (exists $location->{StartLine}) {
+            $writer->add_property("startLine", MakeInt($location->{StartLine}));
+        }
+        if (exists $location->{EndLine}) {
+            $writer->add_property("endLine", MakeInt($location->{EndLine}));
+        }
+        if (exists $location->{StartColumn}) {
+            $writer->add_property("startColumn", MakeInt($location->{StartColumn}));
+        }
+        if (exists $location->{EndColumn}) {
+            $writer->add_property("endColumn", MakeInt($location->{EndColumn}));
+        }
+
+        if ($location->{SourceFile} && defined $location->{StartLine} && defined $location->{EndLine}) {
+        my $snippetFile;
+        if ($self->{buildDir}) {
+            $snippetFile = AdjustPath(".", $self->{buildDir}, $location->{SourceFile});
+        } else {
+            $snippetFile = AdjustPath(".", $self->{build_root_dir}, $location->{SourceFile});
+        }
+        if (-r $snippetFile) {
+            open (my $snippetFh, '<', $snippetFile) or die "Can't open $snippetFile: $!";
+
+            my $count = 1;
+            my $snippetString = "";
+            while(<$snippetFh>) {
+                if ($count > $location->{EndLine}) {
+                    $writer->start_property("snippet");
+                    $writer->start_object();
+                    $writer->add_property("text", $snippetString);
+                    $writer->end_object();
+                    $writer->end_property();
+                    close $snippetFh;
+                    last;
+                }
+                if ($count >= $location->{StartLine}) {
+                    $snippetString = $snippetString.$_;
+                }
+                $count++;
+            }
+        } else {
+            print STDERR "Unable to read snippet from the file $snippetFile\n";
+        }
+    }
+
+        $writer->end_object();
+        $writer->end_property(); # end region
+    }
 }
 
 # Helper function to find the sha256 hash for a file
@@ -1113,8 +1160,12 @@ sub AddConversionObject {
     $writer->start_object();
     $writer->start_property("tool");
     $writer->start_object();
+    $writer->start_property("driver");
+    $writer->start_object();
     $writer->add_property("name", $conversion->{tool_name});
     $writer->add_property("version", $conversion->{tool_version});
+    $writer->end_object();
+    $writer->end_property();
     $writer->end_object();
     $writer->end_property();
 
@@ -1139,7 +1190,7 @@ sub AddConversionObject {
 
     $writer->start_property("environmentVariables");
     $writer->start_object();
-    foreach my $key (keys %{$conversion->{env}}) {
+    foreach my $key (sort keys %{$conversion->{env}}) {
         $writer->add_property($key, $conversion->{env}{$key});
     }
     $writer->end_object();
@@ -1168,64 +1219,18 @@ sub AddThreadFlowsLocations {
         $writer->start_property("physicalLocation");
         $writer->start_object();
 
-        my $filename = AdjustPath($self->{package_root_dir}, ".", $location->{SourceFile});
-        my $fileIndex;
-        if (exists $self->{files}{$location->{SourceFile}}) {
-            $fileIndex = $self->{files}{$location->{SourceFile}};
+        my $artifactname = AdjustPath($self->{package_root_dir}, ".", $location->{SourceFile});
+        my $artifactIndex;
+        if (exists $self->{artifacts}{$location->{SourceFile}}) {
+            $artifactIndex = $self->{artifacts}{$location->{SourceFile}};
         } else {
-            push @{$self->{files_array}}, $location->{SourceFile};
-            $fileIndex = @{$self->{files_array}} - 1;
-            $self->{files}{$location->{SourceFile}} = $fileIndex;
+            push @{$self->{artifacts_array}}, $location->{SourceFile};
+            $artifactIndex = @{$self->{artifacts_array}} - 1;
+            $self->{artifacts}{$location->{SourceFile}} = $artifactIndex;
         }
-        AddFileLocationUri($writer, $filename, "PACKAGEROOT", $fileIndex);
+        AddArtifactLocationUri($writer, $artifactname, "PACKAGEROOT", $artifactIndex);
 
-        if ((exists $location->{StartLine}) || (exists $location->{EndLine}) ||
-            (exists $location->{StartColumn}) || (exists $location->{EndColumn})) {
-            $writer->start_property("region");
-            $writer->start_object();
-            if (exists $location->{StartLine}) {
-                $writer->add_property("startLine", MakeInt($location->{StartLine}));
-            }
-            if (exists $location->{EndLine}) {
-                $writer->add_property("endLine", MakeInt($location->{EndLine}));
-            }
-            if (exists $location->{StartColumn}) {
-                $writer->add_property("startColumn", MakeInt($location->{StartColumn}));
-            }
-            if (exists $location->{EndColumn}) {
-                $writer->add_property("endColumn", MakeInt($location->{EndColumn}));
-            }
-
-            if ($self->{buildDir} && defined $location->{StartLine} && defined $location->{EndLine}) {
-                my $snippetFile = AdjustPath(".", $self->{buildDir}, $location->{SourceFile});
-                if (-r $snippetFile) {
-                    open (my $snippetFh, '<', $snippetFile) or die "Can't open $snippetFile: $!";
-
-                    my $count = 1;
-                    my $snippetString = "";
-                    while(<$snippetFh>) {
-                        if ($count > $location->{EndLine}) {
-                            $writer->start_property("snippet");
-                            $writer->start_object();
-                            $writer->add_property("text", $snippetString);
-                            $writer->end_object();
-                            $writer->end_property();
-                            close $snippetFh;
-                            last;
-                        }
-                        if ($count >= $location->{StartLine}) {
-                            $snippetString = $snippetString.$_;
-                        }
-                        $count++;
-                    }
-                } else {
-                    print "Unable to find $snippetFile\n";
-                }
-            }
-
-            $writer->end_object();
-            $writer->end_property(); # end region
-        }
+        AddRegionObject($self, $writer, $location);
 
         $writer->end_object();
         $writer->end_property(); # end physicalLocation
@@ -1286,7 +1291,7 @@ sub AdjustPath {
     return $path;
 }
 
-# Convert Epoch time to UTC time and returns string that adheres to the SARIF format
+# Convert Epoch time to UTC time and returns the string that adheres to the SARIF format
 sub ConvertEpoch {
     my ($time) = @_;
 
@@ -1299,22 +1304,6 @@ sub ConvertEpoch {
 
     $year += 1900;
     $month += 1;
-
-    if ($month < 10) {
-        $month = "0".$month;
-    }
-    if ($day < 10) {
-        $day = "0".$day;
-    }
-    if ($hour < 10) {
-        $hour = "0".$hour;
-    }
-    if ($min < 10) {
-        $min = "0".$min;
-    }
-    if ($sec < 10) {
-        $sec = "0".$sec;
-    }
 
     if ($fraction) {
         return sprintf("%d-%02d-%02d%s%02d:%02d:%02d.%s%s", $year, $month, $day, "T", $hour, $min, $sec, $fraction, "Z");
@@ -1330,7 +1319,7 @@ sub GetUuid {
     return $s;
 }
 
-# Make the integer that is in a string into integer
+# Make the integer that is in a string into an integer
 sub MakeInt {
     my ($var) = @_;
 
