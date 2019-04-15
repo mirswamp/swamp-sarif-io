@@ -19,6 +19,7 @@
 
 package SarifJsonWriter;
 use strict;
+use FindBin;
 use JSON::Streaming::Writer;
 use Data::Dumper;
 use Digest::file qw(digest_file_hex);
@@ -209,6 +210,33 @@ sub BeginRun {
     $writer->end_property();
 
     AddPropertiesObject($self, $initialData);
+}
+
+# Adds the tool object
+sub AddToolData {
+    my ($self, $toolData) = @_;
+    my $writer = $self->{writer};
+
+    $writer->start_property("tool");
+    $writer->start_object();
+    
+    $writer->start_property("driver");
+    AddToolComponentObject($self, $writer, $toolData->{driver});
+    $writer->end_property(); # end driver
+
+    if ($toolData->{extensions} && @{$toolData->{extensions}}) {
+        $writer->start_property("extensions");
+        $writer->start_array();
+        foreach my $ext (@{$toolData->{extensions}}) {
+            AddToolComponentObject($self, $writer, $toolData->{extensions});
+        }
+        $writer->end_array();
+        $writer->end_property(); # end extensions
+    }
+
+    $writer->end_object();
+    $writer->end_property(); # end tool
+
 }
 
 # Start writing data to the external file
@@ -775,6 +803,121 @@ sub EndFile {
     close $self->{fh};
 }
 
+# Helper method to write the toolComponent object
+sub AddToolComponentObject {
+    my ($self, $writer, $toolData) = @_;
+
+    $writer->start_object();
+
+    $writer->add_property("name", $toolData->{name});
+    $writer->add_property("fullName", $toolData->{fullName}) if $toolData->{fullName};
+    $writer->add_property("guid", $toolData->{guid}) if $toolData->{guid};
+    $writer->add_property("version", $toolData->{version});
+    $writer->add_property("semanticVersion", $toolData->{semanticVersion}) if $toolData->{semanticVersion};
+    $writer->add_property("dottedQuadFileVersion", $toolData->{dottedQuadFileVersion}) if $toolData->{dottedQuadFileVersion};
+    $writer->add_property("releaseDateUtc", $toolData->{releaseDateUtc}) if $toolData->{releaseDateUtc};
+    $writer->add_property("downloadUri", $toolData->{downloadUri}) if $toolData->{downloadUri};
+    $writer->add_property("informationUri", $toolData->{informationUri}) if $toolData->{informationUri};
+    $writer->add_property("organization", $toolData->{organization}) if $toolData->{organization};
+    $writer->add_property("product", $toolData->{product}) if $toolData->{product};
+    $writer->add_property("productSuite", $toolData->{productSuite}) if $toolData->{productSuite};
+    if ($toolData->{shortDescription}) {
+        $writer->start_property("shortDescription");
+        $writer->start_object();
+        $writer->add_property("text", $toolData->{shortDescription}{text}) if $toolData->{shortDescription}{text};
+        $writer->add_property("markdown", $toolData->{shortDescription}{markdown}) if $toolData->{shortDescription}{markdown};
+        $writer->end_object();
+        $writer->end_property();
+    }
+    if ($toolData->{fullDescription}) {
+        $writer->start_property("fullDescription");
+        $writer->start_object();
+        $writer->add_property("text", $toolData->{fullDescription}{text}) if $toolData->{fullDescription}{text};
+        $writer->add_property("markdown", $toolData->{fullDescription}{markdown}) if $toolData->{fullDescription}{markdown};
+        $writer->end_object();
+        $writer->end_property();
+    }
+    $writer->add_property("language", $toolData->{language}) if $toolData->{language};
+    if ($toolData->{globalMessageStrings}) {
+        $writer->start_property("globalMessageStrings");
+        $writer->start_object();
+        foreach my $key (sort keys %{$toolData->{globalMessageStrings}}) {
+            next unless defined $toolData->{globalMessageStrings}{$key};
+            $writer->start_property($key);
+            $writer->start_object();
+            $writer->add_property("text", $toolData->{globalMessageStrings}{text}) if $toolData->{globalMessageStrings}{text};
+            $writer->add_property("markdown", $toolData->{globalMessageStrings}{markdown}) if $toolData->{globalMessageStrings}{markdown};
+            $writer->end_object();
+            $writer->end_property();
+        }
+        $writer->end_object();
+        $writer->end_property();
+    }
+    if ($toolData->{rules} && @{$toolData->{rules}}) {
+        $writer->start_property("rules");
+        $writer->start_array();
+        foreach my $rule (@{$toolData->{rules}}) {
+            AddReportingDescriptorObject($self, $writer, $rule);
+        }
+        $writer->end_array();
+        $writer->end_property();
+    }
+    if ($toolData->{notifications} && @{$toolData->{notifications}}) {
+        $writer->start_property("notifications");
+        $writer->start_array();
+        foreach my $notification (@{$toolData->{notifications}}) {
+            AddReportingDescriptorObject($self, $writer, $notification);
+        }
+        $writer->end_array();
+        $writer->end_property();
+    }
+    if ($toolData->{taxa} && @{$toolData->{taxa}}) {
+        $writer->start_property("taxa");
+        $writer->start_array();
+        foreach my $t (@{$toolData->{taxa}}) {
+            AddReportingDescriptorObject($self, $writer, $t);
+        }
+        $writer->end_array();
+        $writer->end_property();
+    }
+    if ($toolData->{supportedTaxonomies} && @{$toolData->{supportedTaxonomies}}) {
+        $writer->start_property("supportedTaxonomies");
+        foreach my $t (@{$toolData->{supportedTaxonomies}}) {
+            AddToolComponentReferenceObject($self, $writer, $t);
+        }
+        $writer->end_property();
+    }
+    if ($toolData->{translationMetadata} && %{$toolData->{translationMetadata}}) {
+        $writer->start_property("translationMetadata");
+        AddTranslationMetadataObject($self, $writer, $toolData->{translationMetadata});
+        $writer->end_property();
+    }
+    # Add artifactIndices here
+    if ($toolData->{contents} && @{$toolData->{contents}}) {
+        $writer->start_property("contents");
+        $writer->start_array();
+        foreach my $x (@{$toolData->{contents}}) {
+            $writer->add_string($x);
+        }
+        $writer->end_array();
+        $writer->end_property();
+    }
+    if (defined $toolData->{isComprehensive}) {
+        $writer->start_property("isComprehensive");
+        $writer->add_boolean($toolData->{isComprehensive});
+        $writer->end_property();
+    }
+    $writer->add_property("localizedDataSemanticVersion", $toolData->{localizedDataSemanticVersion}) if $toolData->{localizedDataSemanticVersion};
+    $writer->add_property("minimumRequiredLocalizedDataSemanticVersion", $toolData->{minimumRequiredLocalizedDataSemanticVersion}) if $toolData->{minimumRequiredLocalizedDataSemanticVersion};
+    if ($toolData->{associatedComponent} && %{$toolData->{associatedComponent}}) {
+        $writer->start_property("associatedComponent");
+        AddToolComponentReferenceObject($self, $writer, $toolData->{associatedComponent});
+        $writer->end_property();
+    }
+
+    $writer->end_object();
+}
+
 # Helper method to write the external property files object
 sub AddExternalPropertyFiles {
     my ($self) = @_;
@@ -840,6 +983,118 @@ sub AddExternalPropertyFiles {
 
     $writer->end_object();
     $writer->end_property();
+}
+
+# Helper method to add a reportingDescriptor object
+sub AddReportingDescriptorObject {
+    my ($self, $writer, $obj) = @_;
+    $writer->add_property("id", $obj->{id}) if $obj->{id};
+    if ($obj->{deprecatedIds} && @{$obj->{deprecatedIds}}) {
+        $writer->start_property("deprecatedIds");
+        foreach my $x (@{$obj->{deprecatedIds}}) {
+            $writer->add_string($x);
+        }
+        $writer->end_property();
+    }
+    $writer->add_property("guid", $obj->{guid}) if $obj->{guid};
+    if ($obj->{deprecatedGuids} && @{$obj->{deprecatedGuids}}) {
+        $writer->start_property("deprecatedGuids");
+        foreach my $x (@{$obj->{deprecatedGuids}}) {
+            $writer->add_string($x);
+        }
+        $writer->end_property();
+    }
+    $writer->add_property("name", $obj->{name}) if $obj->{name};
+    if ($obj->{deprecatedNames} && @{$obj->{deprecatedNames}}) {
+        $writer->start_property("deprecatedNames");
+        foreach my $x (@{$obj->{deprecatedNames}}) {
+            $writer->add_string($x);
+        }
+        $writer->end_property();
+    }
+    if ($obj->{shortDescription}) {
+        $writer->start_property("shortDescription");
+        $writer->start_object();
+        $writer->add_property("text", $obj->{shortDescription}{text}) if $obj->{shortDescription}{text};
+        $writer->add_property("markdown", $obj->{shortDescription}{markdown}) if $obj->{shortDescription}{markdown};
+        $writer->end_object();
+        $writer->end_property();
+    }
+    if ($obj->{fullDescription}) {
+        $writer->start_property("fullDescription");
+        $writer->start_object();
+        $writer->add_property("text", $obj->{fullDescription}{text}) if $obj->{fullDescription}{text};
+        $writer->add_property("markdown", $obj->{fullDescription}{markdown}) if $obj->{fullDescription}{markdown};
+        $writer->end_object();
+        $writer->end_property();
+    }
+    if ($obj->{messageStrings}) {
+        $writer->start_property("messageStrings");
+        foreach my $key (sort keys %{$obj->{messageStrings}}) {
+            next unless $obj->{messageStrings}{$key} && %{$obj->{messageStrings}{$key}};
+            $writer->start_property($key);
+            $writer->start_object();
+            $writer->add_property("text", $obj->{messageStrings}{$key}{text}) if $obj->{messageStrings}{$key}{text};
+            $writer->add_property("markdown", $obj->{messageStrings}{$key}{markdown}) if $obj->{messageStrings}{$key}{markdown};
+            $writer->end_object();
+            $writer->end_property();
+        }
+        $writer->end_property();
+    }
+    $writer->add_property("helpUri", $obj->{helpUri}) if $obj->{helpUri};
+    if ($obj->{help} && %{$obj->{help}}) {
+        $writer->start_property("help");
+        $writer->start_object();
+        $writer->add_property("text", $obj->{help}{text}) if $obj->{help}{text};
+        $writer->add_property("markdown", $obj->{help}{markdown}) if $obj->{help}{markdown};
+        $writer->end_object();
+        $writer->end_property();
+    }
+    # Add defaultConfiguration property here
+    # Add relationships property here
+}
+
+# Helper method to write a toolComponentReference object
+sub AddToolComponentReferenceObject {
+    my ($self, $writer, $obj) = @_;
+
+    $writer->start_object();
+    
+    $writer->add_property("name", $obj->{name}) if $obj->{name};
+    $writer->add_property("index", $obj->{index}) if $obj->{index};
+    $writer->add_property("guid", $obj->{guid}) if $obj->{guid};
+
+    $writer->end_object();
+}
+
+# Helper method to write a translationMetadata object
+sub AddTranslationMetadataObject {
+    my ($self, $writer, $obj) = @_;
+
+    $writer->start_object();
+
+    $writer->add_property("name", $obj->{name}) if $obj->{name};
+    $writer->add_property("fullName", $obj->{fullName}) if $obj->{fullName};
+    if ($obj->{shortDescription}) {
+        $writer->start_property("shortDescription");
+        $writer->start_object();
+        $writer->add_property("text", $obj->{shortDescription}{text}) if $obj->{shortDescription}{text};
+        $writer->add_property("markdown", $obj->{shortDescription}{markdown}) if $obj->{shortDescription}{markdown};
+        $writer->end_object();
+        $writer->end_property();
+    }
+    if ($obj->{fullDescription}) {
+        $writer->start_property("fullDescription");
+        $writer->start_object();
+        $writer->add_property("text", $obj->{fullDescription}{text}) if $obj->{fullDescription}{text};
+        $writer->add_property("markdown", $obj->{fullDescription}{markdown}) if $obj->{fullDescription}{markdown};
+        $writer->end_object();
+        $writer->end_property();
+    }
+    $writer->add_property("downloadUri", $obj->{downloadUri}) if $obj->{downloadUri};
+    $writer->add_property("informationUri", $obj->{informationUri}) if $obj->{informationUri};
+
+    $writer->end_object();
 }
 
 # Helper method to write a fileLocation object
