@@ -20,6 +20,7 @@
 package SarifJsonWriter;
 use strict;
 use FindBin;
+use lib "$FindBin::Bin";
 use JSON::Streaming::Writer;
 use Data::Dumper;
 use Digest::file qw(digest_file_hex);
