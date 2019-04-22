@@ -27,7 +27,7 @@ use Digest::file qw(digest_file_hex);
 use Exporter 'import';
 our @EXPORT_OK = qw(CheckInitialData CheckInvocations CheckResultData CheckRuleData);
 
-my $sarifVersion = "2.0.0-csd.2.beta.2019-04-03";
+my $sarifVersion = "2.1.0";
 my $sarifSchema = "https://raw.githubusercontent.com/Microsoft/sarif-sdk/master/src/Sarif/Schemata/sarif-schema.json";
 my $externalSchema = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-external-property-file-schema.json";
 
@@ -61,6 +61,7 @@ sub new {
 # Set options for program
 sub SetOptions {
     my ($self, $options) = @_;
+    my @errors;
 
     # Set whether the writer pretty prints (meaning add indentation)
     if (defined $options->{pretty}) {
@@ -72,6 +73,26 @@ sub SetOptions {
         if ($options->{error_level} >= 0 && $options->{error_level} <= 2) {
             $self->{error_level} = $options->{error_level};
         }
+    }
+
+    if (defined $options->{addArtifacts}) {
+        $self->{addArtifacts} = $options->{addArtifacts} ? 1 : 0;
+    }
+    if (defined $options->{addArtifactsNoLocation}) {
+        $self->{addArtifactsNoLocation} = $options->{addArtifactsNoLocation} ? 1 : 0;
+    }
+    if (defined $options->{addArtifacts} && !$options->{addArtifacts} && $options->{addArtifactsNoLocation}) {
+        push @errors, 'Cannot make addArtifactsNoLocation true while addArtifacts is false';
+    }
+    if (!defined $options->{addArtifacts} && !defined $options->{addArtifactsNoLocation}) {
+        $self->{addArtifacts} = 1;
+        $self->{addArtifactsNoLocation} = 0;
+    }
+
+    if (defined $options->{addProvenance}) {
+        $self->{addProvenance} = $options->{addProvenance} ? 1 : 0;
+    } else {
+        $self->{addProvenance} = 1;
     }
 
     if ($options->{external}) {
@@ -110,6 +131,18 @@ sub SetOptions {
                 $self->{external}{$key}{fileName} = ();
                 push @{$self->{external}{$key}{fileName}}, $options->{external}{$key}{name};
             }
+        }
+    }
+
+    if (@errors) {
+        if ($self->{error_level} != 0) {
+            foreach (@errors) {
+                print STDERR "$_\n";
+            }
+        }
+
+        if ($self->{error_level} == 2) {
+            die "Error with optionsData. Program exiting."
         }
     }
 }
@@ -198,17 +231,6 @@ sub BeginRun {
             StartExternal($self, $key);
         }
     }
-
-    $writer->start_property("tool");
-    $writer->start_object();
-    $writer->start_property("driver");
-    $writer->start_object();
-    $writer->add_property("name", $initialData->{tool_name});
-    $writer->add_property("version", $initialData->{tool_version});
-    $writer->end_object();
-    $writer->end_property();
-    $writer->end_object();
-    $writer->end_property();
 
     AddPropertiesObject($self, $initialData);
 }
@@ -546,7 +568,16 @@ sub AddResult {
                 $writer->start_object();
                 $writer->start_property("physicalLocation");
                 $writer->start_object();
-                AddArtifactLocationUri($writer, $artifactname, "PACKAGEROOT", $artifactIndex);
+                if ($self->{addArtifactsNoLocation}) {
+                    AddArtifactLocationUri($writer, undef, undef, $artifactIndex);
+                } else {
+                    if ($self->{addArtifacts}) {
+                        AddArtifactLocationUri($writer, $artifactname, "PACKAGEROOT", $artifactIndex);
+                    } else {
+                        AddArtifactLocationUri($writer, $artifactname, "PACKAGEROOT");
+                    }
+                    
+                }
 
                 AddRegionObject($self, $writer, $location);
 
@@ -604,18 +635,20 @@ sub AddResult {
         $writer->end_property();
     }
 
-    $writer->start_property("provenance");
-    $writer->start_object();
-    $writer->add_property("invocationIndex", $bugData->{BuildId} - 1);
-    $writer->start_property("conversionSources");
-    $writer->start_array();
-    $writer->start_object();
-    AddArtifactLocationUri($writer, $bugData->{AssessmentReportFile}, "RESULTSROOT");
-    $writer->end_object();
-    $writer->end_array();
-    $writer->end_property();
-    $writer->end_object();
-    $writer->end_property();
+    if (defined $self->{addProvenance} && $self->{addProvenance}) {
+        $writer->start_property("provenance");
+        $writer->start_object();
+        $writer->add_property("invocationIndex", $bugData->{BuildId} - 1);
+        $writer->start_property("conversionSources");
+        $writer->start_array();
+        $writer->start_object();
+        AddArtifactLocationUri($writer, $bugData->{AssessmentReportFile}, "RESULTSROOT");
+        $writer->end_object();
+        $writer->end_array();
+        $writer->end_property();
+        $writer->end_object();
+        $writer->end_property();
+    }
 
     # Write data to property bag object
     if ($bugData->{BugSeverity} || $bugData->{CweIds}) {
@@ -777,7 +810,9 @@ sub EndRun {
     my $writer = $self->{writer};
 
     #AddLogicalLocations($self);
-    AddArtifactsObject($self, $endData->{sha256hashes});
+    if ($self->{addArtifacts}) {
+        AddArtifactsObject($self, $endData->{sha256hashes});
+    }
     if (keys %{$self->{xwriters}} > 0) {
         AddExternalPropertyFiles($self);
     }
@@ -893,7 +928,7 @@ sub AddToolComponentObject {
         AddTranslationMetadataObject($self, $writer, $toolData->{translationMetadata});
         $writer->end_property();
     }
-    # Add artifactIndices here
+    # Add locations property here
     if ($toolData->{contents} && @{$toolData->{contents}}) {
         $writer->start_property("contents");
         $writer->start_array();
@@ -992,25 +1027,31 @@ sub AddReportingDescriptorObject {
     $writer->add_property("id", $obj->{id}) if $obj->{id};
     if ($obj->{deprecatedIds} && @{$obj->{deprecatedIds}}) {
         $writer->start_property("deprecatedIds");
+        $writer->start_array();
         foreach my $x (@{$obj->{deprecatedIds}}) {
             $writer->add_string($x);
         }
+        $writer->end_array();
         $writer->end_property();
     }
     $writer->add_property("guid", $obj->{guid}) if $obj->{guid};
     if ($obj->{deprecatedGuids} && @{$obj->{deprecatedGuids}}) {
         $writer->start_property("deprecatedGuids");
+        $writer->start_array();
         foreach my $x (@{$obj->{deprecatedGuids}}) {
             $writer->add_string($x);
         }
+        $writer->end_array();
         $writer->end_property();
     }
     $writer->add_property("name", $obj->{name}) if $obj->{name};
     if ($obj->{deprecatedNames} && @{$obj->{deprecatedNames}}) {
         $writer->start_property("deprecatedNames");
+        $writer->start_array();
         foreach my $x (@{$obj->{deprecatedNames}}) {
             $writer->add_string($x);
         }
+        $writer->end_array();
         $writer->end_property();
     }
     if ($obj->{shortDescription}) {
@@ -1106,9 +1147,9 @@ sub AddArtifactLocationUri {
 
     $writer->start_property("artifactLocation");
     $writer->start_object();
-    $writer->add_property("uri", $uri);
+    $writer->add_property("uri", $uri) if (defined $uri);
     $writer->add_property("uriBaseId", $uriBaseId) if (defined $uriBaseId);
-    $writer->add_property("artifactIndex", $artifactIndex) if (defined $artifactIndex);
+    $writer->add_property("index", $artifactIndex) if (defined $artifactIndex);
     $writer->end_object();
     $writer->end_property();
 }
@@ -1292,7 +1333,15 @@ sub AddArtifactsObject {
 
             $writer->start_object();
             my $artifactname = AdjustPath($self->{package_root_dir}, ".", $artifact);
-            AddArtifactLocationUri($writer, $artifactname, "PACKAGEROOT");
+
+            # Cannot use AddArtifactLocationUri because property name is "location", not "artifactLocation"
+            #AddArtifactLocationUri($writer, $artifactname, "PACKAGEROOT");
+            $writer->start_property("location");
+            $writer->start_object();
+            $writer->add_property("uri", $artifactname);
+            $writer->add_property("uriBaseId", "PACKAGEROOT");
+            $writer->end_object();
+            $writer->end_property();
 
             my $sha256;
             if ($sha256hashes) {
