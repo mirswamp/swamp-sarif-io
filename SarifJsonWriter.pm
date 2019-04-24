@@ -95,6 +95,24 @@ sub SetOptions {
         $self->{addProvenance} = 1;
     }
 
+    if (defined $options->{artifactHashes}) {
+        $self->{artifactHashes} = $options->{artifactHashes} ? 1 : 0;
+    } else {
+        $self->{artifactHashes} = 1;
+    }
+
+    if (defined $options->{sortKeys}) {
+        $self->{sortKeys} = $options->{sortKeys} ? 1 : 0;
+    }
+
+    $self->{extraSnippets} = 0;
+    if (defined $options->{extraSnippets}) {
+        if ($options->{extraSnippets} < 0) {
+            push @errors, 'extraSnippets must be set to a positive number';
+        }
+        $self->{extraSnippets} = $options->{extraSnippets};
+    }
+
     if ($options->{external}) {
         my %opened; # for where more than 1 object is externalized in same external file
         foreach my $key (keys %{$options->{external}}) {
@@ -134,7 +152,7 @@ sub SetOptions {
         }
     }
 
-    if (@errors) {
+    if ($self->{error_level} != 0 && @errors) {
         if ($self->{error_level} != 0) {
             foreach (@errors) {
                 print STDERR "$_\n";
@@ -192,16 +210,16 @@ sub BeginRun {
     my ($self, $initialData) = @_;
     my $writer = $self->{writer};
 
-    my $errors = CheckInitialData($initialData);
-    if (@{$errors}) {
-        if ($self->{error_level} != 0) {
+    if ($self->{error_level} != 0) {
+        my $errors = CheckInitialData($initialData);
+        if (@{$errors}) {
             foreach (@{$errors}) {
                 print STDERR "$_\n";
             }
-        }
 
-        if ($self->{error_level} == 2) {
-            die "Error with initialData hash. Program exiting."
+            if ($self->{error_level} == 2) {
+                die "Error with initialData hash. Program exiting."
+            }
         }
     }
 
@@ -289,7 +307,13 @@ sub AddOriginalUriBaseIds {
     $writer->start_property("originalUriBaseIds");
     $writer->start_object();
 
-    foreach my $k (sort keys %{$baseIds}) {
+    my @keys;
+    if ($self->{sortKeys}) {
+        @keys = sort keys %{$baseIds};
+    } else {
+        @keys = keys %{$baseIds};
+    }
+    foreach my $k (@keys) {
         if (defined $baseIds->{$k}) {
             # uri must end in a '/'
             if ($baseIds->{$k} !~ /\/$/) {
@@ -424,7 +448,13 @@ sub AddInvocations {
         if (defined $assessment->{env}) {
             $writer->start_property("environmentVariables");
             $writer->start_object();
-            foreach my $key (sort keys %{$assessment->{env}}) {
+            my @envKeys;
+            if ($self->{sortKeys}) {
+                @envKeys = sort keys %{$assessment->{env}};
+            } else {
+                @envKeys = keys %{$assessment->{env}};
+            }
+            foreach my $key (@envKeys) {
                 my $value = $assessment->{env}{$key};
                 $writer->add_property($key, $value);
             }
@@ -512,15 +542,16 @@ sub AddResult {
         $writer = $self->{writer};
     }
 
-    my $errors = CheckResultData($bugData);
-    if (@{$errors}) {
-        if ($self->{error_level} != 0) {
+    if ($self->{error_level} != 0) {
+        my $errors = CheckResultData($bugData);
+        if (@{$errors}) {
             foreach (@{$errors}) {
                 print STDERR "$_\n";
             }
-        }
-        if ($self->{error_level} == 2) {
-            die "Error with bugData hash. Program exiting."
+
+            if ($self->{error_level} == 2) {
+                die "Error with bugData hash. Program exiting."
+            }
         }
     }
 
@@ -737,16 +768,16 @@ sub AddResources {
         $writer = $self->{writer};
     }
 
-    my $errors = CheckRuleData($ruleData);
-    if (@{$errors}) {
-        if ($self->{error_level} != 0) {
+    if ($self->{error_level} != 0) {
+        my $errors = CheckRuleData($ruleData);
+        if (@{$errors}) {
             foreach (@{$errors}) {
                 print STDERR "$_\n";
             }
-        }
 
-        if ($self->{error_level} == 2) {
-            die "Error with ruleData hash. Program exiting."
+            if ($self->{error_level} == 2) {
+                die "Error with ruleData hash. Program exiting."
+            }
         }
     }
 
@@ -884,7 +915,13 @@ sub AddToolComponentObject {
     if ($toolData->{globalMessageStrings}) {
         $writer->start_property("globalMessageStrings");
         $writer->start_object();
-        foreach my $key (sort keys %{$toolData->{globalMessageStrings}}) {
+        my @globalMessageStringsKeys;
+        if ($self->{sortKeys}) {
+            @globalMessageStringsKeys = sort keys %{$toolData->{globalMessageStrings}};
+        } else {
+            @globalMessageStringsKeys = keys %{$toolData->{globalMessageStrings}}
+        }
+        foreach my $key (@globalMessageStringsKeys) {
             next unless defined $toolData->{globalMessageStrings}{$key};
             $writer->start_property($key);
             $writer->start_object();
@@ -1079,7 +1116,13 @@ sub AddReportingDescriptorObject {
     }
     if ($obj->{messageStrings}) {
         $writer->start_property("messageStrings");
-        foreach my $key (sort keys %{$obj->{messageStrings}}) {
+        my @messageStringsKeys;
+        if ($self->{sortKeys}) {
+            @messageStringsKeys = sort keys %{$obj->{messageStrings}};
+        } else {
+            @messageStringsKeys = keys %{$obj->{messageStrings}};
+        }
+        foreach my $key (@messageStringsKeys) {
             next unless $obj->{messageStrings}{$key} && %{$obj->{messageStrings}{$key}};
             $writer->start_property($key);
             $writer->start_object();
@@ -1350,27 +1393,29 @@ sub AddArtifactsObject {
             $writer->end_object();
             $writer->end_property();
 
-            my $sha256;
-            if ($sha256hashes) {
-                # if a file containing all the hashes is provided
-                my $hashPath = "build/".$artifact;
-                $sha256 = FindSha256Hash($sha256hashes, $hashPath);
-            } else {
-                # no file containing all the hashes is provided, so attempt to compute it myself
-                my $hashPath = AdjustPath($self->{package_root_dir}, $self->{build_root_dir}, $artifact);
-                if (-r $hashPath) {
-                    $sha256 = digest_file_hex($hashPath, "SHA-256");
+            if ($self->{artifactHashes}) {
+                my $sha256;
+                if ($sha256hashes) {
+                    # if a file containing all the hashes is provided
+                    my $hashPath = "build/".$artifact;
+                    $sha256 = FindSha256Hash($sha256hashes, $hashPath);
+                } else {
+                    # no file containing all the hashes is provided, so attempt to compute it myself
+                    my $hashPath = AdjustPath($self->{package_root_dir}, $self->{build_root_dir}, $artifact);
+                    if (-r $hashPath) {
+                        $sha256 = digest_file_hex($hashPath, "SHA-256");
+                    }
                 }
-            }
 
-            if ($sha256) {
-                $writer->start_property("hashes");
-                $writer->start_object();
-                $writer->add_property("sha-256", $sha256);
-                $writer->end_object();
-                $writer->end_property();
-            } else {
-                print STDERR "Unable to find sha256 hash for $artifact\n";
+                if ($sha256) {
+                    $writer->start_property("hashes");
+                    $writer->start_object();
+                    $writer->add_property("sha-256", $sha256);
+                    $writer->end_object();
+                    $writer->end_property();
+                } else {
+                    print STDERR "Unable to find sha256 hash for $artifact\n";
+                }
             }
 
             $writer->end_object();
@@ -1418,20 +1463,29 @@ sub AddRegionObject {
 
             my $count = 1;
             my $snippetString = "";
+            my $start;
+            if ($location->{StartLine} - $self->{extraSnippets} < 1) {
+                $start = 1;
+            } else {
+                $start = $location->{StartLine} - $self->{extraSnippets}
+            }
             while(<$snippetFh>) {
-                if ($count > $location->{EndLine}) {
-                    $writer->start_property("snippet");
-                    $writer->start_object();
-                    $writer->add_property("text", $snippetString);
-                    $writer->end_object();
-                    $writer->end_property();
-                    close $snippetFh;
+                if ($count > ($location->{EndLine} + $self->{extraSnippets})) {
                     last;
                 }
-                if ($count >= $location->{StartLine}) {
+                if ($count >= $start) {
                     $snippetString = $snippetString.$_;
                 }
                 $count++;
+            }
+
+            if ($snippetString) {
+                $writer->start_property("snippet");
+                $writer->start_object();
+                $writer->add_property("text", $snippetString);
+                $writer->end_object();
+                $writer->end_property();
+                close $snippetFh;
             }
         } else {
             print STDERR "Unable to read snippet from the file $snippetFile\n";
