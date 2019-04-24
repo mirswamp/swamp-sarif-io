@@ -379,6 +379,11 @@ sub AddInvocations {
     my ($self, $invocations) = @_;
     my $writer;
 
+    if (@{$invocations}) {
+        # Mark invocations is added so that invocationIndex can be added in result
+        $self->{hasInvocations} = 1;
+    }
+
     if ($self->{xwriters}{invocations}) {
         $writer = $self->{xwriters}{invocations};
     } else {
@@ -638,7 +643,9 @@ sub AddResult {
     if (defined $self->{addProvenance} && $self->{addProvenance}) {
         $writer->start_property("provenance");
         $writer->start_object();
-        $writer->add_property("invocationIndex", $bugData->{BuildId} - 1);
+        if ($self->{hasInvocations}) {
+            $writer->add_property("invocationIndex", $bugData->{BuildId} - 1);
+        }
         $writer->start_property("conversionSources");
         $writer->start_array();
         $writer->start_object();
