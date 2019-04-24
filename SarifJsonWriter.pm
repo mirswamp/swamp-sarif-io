@@ -817,7 +817,7 @@ sub EndRun {
     my $writer = $self->{writer};
 
     #AddLogicalLocations($self);
-    if ($self->{addArtifacts}) {
+    if ($self->{addArtifacts} || $self->{addArtifactsNoLocation}) {
         AddArtifactsObject($self, $endData->{sha256hashes});
     }
     if (keys %{$self->{xwriters}} > 0) {
