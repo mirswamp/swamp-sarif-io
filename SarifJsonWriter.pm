@@ -105,6 +105,12 @@ sub SetOptions {
         $self->{sortKeys} = $options->{sortKeys} ? 1 : 0;
     }
 
+    if (defined $options->{addSnippets}) {
+        $self->{addSnippets} = $options->{addSnippets} ? 1 : 0;
+    } else {
+        $self->{addSnippets} = 1;
+    }
+
     $self->{extraSnippets} = 0;
     if (defined $options->{extraSnippets}) {
         if ($options->{extraSnippets} < 0) {
@@ -1451,46 +1457,46 @@ sub AddRegionObject {
             $writer->add_property("endColumn", MakeInt($location->{EndColumn}));
         }
 
-        if ($location->{SourceFile} && defined $location->{StartLine} && defined $location->{EndLine}) {
-        my $snippetFile;
-        if ($self->{buildDir}) {
-            $snippetFile = AdjustPath(".", $self->{buildDir}, $location->{SourceFile});
-        } else {
-            $snippetFile = AdjustPath(".", $self->{build_root_dir}, $location->{SourceFile});
-        }
-        if (-r $snippetFile) {
-            open (my $snippetFh, '<', $snippetFile) or die "Can't open $snippetFile: $!";
-
-            my $count = 1;
-            my $snippetString = "";
-            my $start;
-            if ($location->{StartLine} - $self->{extraSnippets} < 1) {
-                $start = 1;
+        if ($self->{addSnippets} && $location->{SourceFile} && defined $location->{StartLine} && defined $location->{EndLine}) {
+            my $snippetFile;
+            if ($self->{buildDir}) {
+                $snippetFile = AdjustPath(".", $self->{buildDir}, $location->{SourceFile});
             } else {
-                $start = $location->{StartLine} - $self->{extraSnippets}
+                $snippetFile = AdjustPath(".", $self->{build_root_dir}, $location->{SourceFile});
             }
-            while(<$snippetFh>) {
-                if ($count > ($location->{EndLine} + $self->{extraSnippets})) {
-                    last;
-                }
-                if ($count >= $start) {
-                    $snippetString = $snippetString.$_;
-                }
-                $count++;
-            }
+            if (-r $snippetFile) {
+                open (my $snippetFh, '<', $snippetFile) or die "Can't open $snippetFile: $!";
 
-            if ($snippetString) {
-                $writer->start_property("snippet");
-                $writer->start_object();
-                $writer->add_property("text", $snippetString);
-                $writer->end_object();
-                $writer->end_property();
-                close $snippetFh;
+                my $count = 1;
+                my $snippetString = "";
+                my $start;
+                if ($location->{StartLine} - $self->{extraSnippets} < 1) {
+                    $start = 1;
+                } else {
+                    $start = $location->{StartLine} - $self->{extraSnippets}
+                }
+                while(<$snippetFh>) {
+                    if ($count > ($location->{EndLine} + $self->{extraSnippets})) {
+                        last;
+                    }
+                    if ($count >= $start) {
+                        $snippetString = $snippetString.$_;
+                    }
+                    $count++;
+                }
+
+                if ($snippetString) {
+                    $writer->start_property("snippet");
+                    $writer->start_object();
+                    $writer->add_property("text", $snippetString);
+                    $writer->end_object();
+                    $writer->end_property();
+                    close $snippetFh;
+                }
+            } else {
+                print STDERR "Unable to read snippet from the file $snippetFile\n";
             }
-        } else {
-            print STDERR "Unable to read snippet from the file $snippetFile\n";
         }
-    }
 
         $writer->end_object();
         $writer->end_property(); # end region
