@@ -332,7 +332,13 @@ sub AddOriginalUriBaseIds {
             $writer->end_property();
 
             # store it
-            $self->{baseIds}{$k} = $baseIds->{$k};
+            if ($baseIds->{$k} =~ /^file:\/\/(.+)/) {
+                # If string begins with "file://" don't store this part,
+                # so that paths can still be adjusted to this baseId
+                $self->{baseIds}{$k} = $1;
+            } else {
+                $self->{baseIds}{$k} = $baseIds->{$k};
+            }
         }
     }
 
@@ -427,49 +433,7 @@ sub AddInvocations {
             $writer = $self->{xwriters}{invocations}; # Reassigns the writer variable
         }
 
-        $writer->start_object();
-        CheckAndAddInvocation($writer, "commandLine", $assessment->{commandLine});
-
-        if ($assessment->{args} && @{$assessment->{args}} > 0) {
-            $writer->start_property("arguments");
-            $writer->start_array();
-            foreach my $arg (@{$assessment->{args}}) {
-                $writer->add_string($arg);
-            }
-            $writer->end_array();
-            $writer->end_property();
-        }
-
-        CheckAndAddInvocation($writer, "startTimeUtc", ConvertEpoch($assessment->{startTime}));
-        CheckAndAddInvocation($writer, "endTimeUtc", ConvertEpoch($assessment->{endTime}));
-
-        $writer->start_property("workingDirectory");
-        $writer->start_object();
-        my $wd = AdjustPath($self->{baseIds}{PACKAGEROOT}, ".", $assessment->{workingDirectory});
-        $writer->add_property("uri", $wd);
-        $writer->add_property("uriBaseId", "PACKAGEROOT");
-        $writer->end_object();
-        $writer->end_property();
-
-        if (defined $assessment->{env}) {
-            $writer->start_property("environmentVariables");
-            $writer->start_object();
-            my @envKeys;
-            if ($self->{sortKeys}) {
-                @envKeys = sort keys %{$assessment->{env}};
-            } else {
-                @envKeys = keys %{$assessment->{env}};
-            }
-            foreach my $key (@envKeys) {
-                my $value = $assessment->{env}{$key};
-                $writer->add_property($key, $value);
-            }
-            $writer->end_object();
-            $writer->end_property();
-        }
-
-        CheckAndAddInvocation($writer, "exitCode", $assessment->{exitCode});
-        $writer->end_object();
+        AddInvocationObject($self, $writer, $assessment);
 
         if ($self->{external}{invocations} && exists $self->{external}{invocations}{currItems}) {
             $self->{external}{invocations}{currItems}[-1] += 1;
@@ -1195,6 +1159,76 @@ sub AddTranslationMetadataObject {
     $writer->end_object();
 }
 
+# Helper method to write an invocation object
+sub AddInvocationObject {
+    my ($self, $writer, $invocation, $isConversion) = @_;
+
+    $writer->start_object();
+
+    CheckAndAddInvocation($writer, "commandLine", $invocation->{commandLine});
+
+    if ($invocation->{args} && @{$invocation->{args}}) {
+        $writer->start_property("arguments");
+        $writer->start_array();
+        foreach my $arg (@{$invocation->{args}}) {
+            $writer->add_string($arg);
+        }
+        $writer->end_array();
+        $writer->end_property();
+    }
+
+    if ($invocation->{env} && %{$invocation->{env}}) {
+        $writer->start_property("environmentVariables");
+        $writer->start_object();
+        my @envKeys;
+        if ($self->{sortKeys}) {
+            @envKeys = sort keys %{$invocation->{env}};
+        } else {
+            @envKeys = keys %{$invocation->{env}};
+        }
+        foreach my $k (@envKeys) {
+            $writer->add_property($k, $invocation->{env}{$k});
+        }
+        $writer->end_object();
+        $writer->end_property();
+    }
+
+    $writer->start_property("workingDirectory");
+    $writer->start_object();
+    if (!$isConversion) {
+        my $wd = AdjustPath($self->{baseIds}{PACKAGEROOT}, ".", $invocation->{workingDirectory});
+        $writer->add_property("uri", $wd);
+        $writer->add_property("uriBaseId", "PACKAGEROOT");
+        $writer->end_object();
+        $writer->end_property();
+
+        CheckAndAddInvocation($writer, "exitCode", $invocation->{exitCode});
+    } else {
+        $writer->add_property("uri", $invocation->{workingDirectory});
+        $writer->end_object();
+        $writer->end_property();
+
+        CheckAndAddInvocation($writer, "exitCode", 0);
+    }
+
+    if (!defined $invocation->{executionSuccessful}) {
+        print STDERR "executionSuccessful does not exist on this invocation object, defaulting to TRUE\n";
+        $invocation->{executionSuccessful} = 1;
+    }
+    $writer->start_property("executionSuccessful");
+    $writer->add_boolean($invocation->{executionSuccessful});
+    $writer->end_property();
+
+    CheckAndAddInvocation($writer, "startTimeUtc", ConvertEpoch($invocation->{startTime}));
+    if (!$isConversion) {
+        CheckAndAddInvocation($writer, "endTimeUtc", ConvertEpoch($invocation->{endTime}));
+    } else {
+        CheckAndAddInvocation($writer, "endTimeUtc", ConvertEpoch(time()));
+    }
+
+    $writer->end_object();
+}
+
 # Helper method to write a fileLocation object
 # if only 1 property -> adds only uri property
 # else -> adds uri, uriBaseId and artifactIndex
@@ -1530,49 +1564,18 @@ sub AddConversionObject {
     }
 
     $writer->start_object();
+
     $writer->start_property("tool");
     $writer->start_object();
     $writer->start_property("driver");
-    $writer->start_object();
-    $writer->add_property("name", $conversion->{tool_name});
-    $writer->add_property("version", $conversion->{tool_version});
-    $writer->end_object();
+    AddToolComponentObject($self, $writer, $conversion->{tool}{driver});
     $writer->end_property();
     $writer->end_object();
     $writer->end_property();
 
     $writer->start_property("invocation");
-
-    $writer->start_object();
-    $writer->add_property("commandLine", $conversion->{commandLine});
-
-    $writer->start_property("arguments");
-    $writer->start_array();
-    foreach my $arg (@{$conversion->{argv}}) {
-        $writer->add_string($arg);
-    }
-    $writer->end_array();
+    AddInvocationObject($self, $writer, $conversion, 1);
     $writer->end_property();
-
-    $writer->start_property("workingDirectory");
-    $writer->start_object();
-    $writer->add_property("uri", $conversion->{workingDirectory});
-    $writer->end_object();
-    $writer->end_property();
-
-    $writer->start_property("environmentVariables");
-    $writer->start_object();
-    foreach my $key (sort keys %{$conversion->{env}}) {
-        $writer->add_property($key, $conversion->{env}{$key});
-    }
-    $writer->end_object();
-    $writer->end_property();
-    $writer->add_property("exitCode", 0);
-    $writer->add_property("startTimeUtc", ConvertEpoch($conversion->{startTime}));
-    $writer->add_property("endTimeUtc", ConvertEpoch(time()));
-
-    $writer->end_object();
-    $writer->end_property(); # end invocation
 
     $writer->end_object();
     $writer->end_property();
