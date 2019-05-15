@@ -18,11 +18,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and 
 limitations under the License.
 ////
-Module Version: 0.8.5
+Module Version: 1.0.0
 
-Last updated on 03-06-2019
+Last updated on 05-15-2019
 
-Sarif version currently tracking: sarif-2.0.0-csd.2.beta.2019-01-09
+Sarif version currently tracking: 2.1.0
 
 === Name
 swamp-sarif-io - Library to write SARIF files from Perl
@@ -44,6 +44,9 @@ my $writer = new SarifJsonWriter($output, "utf-8");
 
 my %optionsData = (
   pretty => 1,
+  error_level => 2,
+  addArtifactsNoLocation => 1,
+  addProvenance => 1,
   external => {
     results => {
       name => "results.sarif-external-properties",
@@ -61,6 +64,7 @@ push @errors, CheckRuleData($ruleData);
 
 $writer->BeginFile();
 $writer->BeginRun($initialData);
+$writer->AddToolData($toolData);
 $writer->AddOriginalUriBaseIds($baseIds);
 $writer->AddInvocations($invocations);
 $writer->BeginResults();
@@ -69,18 +73,6 @@ $writer->EndResults();
 $writer->AddResources($ruleData);
 $writer->EndRun($endData);
 $writer->EndFile();
-----
-An example usage where the assessment failed to run:
-[source, perl]
-----
-use SarifJsonWriter;
-
-my $output = "/path/to/file.sarif"
-my $writer = new SarifJsonWriter($output, "utf-8");
-
-$writer->SetPretty(1);
-
-$writer->AddFailure($failureData);
 ----
 
 === Output
@@ -91,12 +83,14 @@ Significant SARIF properties included in the generated SARIF files:
   $schema: "...",
   runs: [
     {
-      id: {
-        instanceGuid: "...",
+      automationDetails: {
+        guid: "...",
       },
       tool: {
-        name: "...",
-        version: "...",
+        driver: {
+          name: "...",
+          version: "...",
+        }
       },
       properties: { ... },
       originalUriBaseIds: { ... },
@@ -121,7 +115,7 @@ Significant SARIF properties included in the generated SARIF files:
           properties: { tags: [], ... },
         }, ...
       ]
-      files: [ ... ],
+      artifacts: [ ... ],
       conversion: { ... },      
     }, ...
   ]
@@ -139,37 +133,42 @@ The following Perl libraries should be installed for the program to work correct
 This is the subroutine used to instantiate the writer. This subroutine expects two parameters, which are the output file name and the encoding. Only the "utf-8" encoding is supported right now.
 
 ==== SetOptions($optionsData)
-Sets options for the writer. Current options supported includes whether the writer pretty prints (meaning add indentation), setting the error level and to set which properties will be externalized.
-
-Error level sets how the program handle errors. 0 means do nothing; 1 means just print the error; 2 means print the error and die. 2 is the default value.
-
-If an external property has a set max size, the external property file that contains this external property cannot contain an external property other than this external property.
+Sets options for the writer. Refer to the Data Structures section to learn more about what options are available. 
 
 ==== GetPretty()
-Returns a boolean that shows whether the writer currently pretty prints. 0 (false) is the default.
+Returns a boolean that shows whether the writer currently pretty prints.
 
 ==== GetErrorLevel()
-Returns the error level currently set. 2 is the default value.
+Returns the error level currently set.
+
+==== GetNumBugs()
+Returns the total number of result objects added.
 
 ==== BeginFile()
-Starts writing some initial properties to the SARIF file.
+This subroutine writes the version and schema properties and starts the runs array.
 
 ==== BeginRun($initialData)
-This subroutine writes to the SARIF file data that applies to the whole assessment.
+This subroutine starts writing initial data to the run object and saves some data for later use.
+
+==== AddToolData($toolData)
+Adds information about the tool and/or extensions to the SARIF file.
 
 ==== AddOriginalUriBaseIds($baseIds)
 Adds the originalUriBaseIds property to the SARIF file.
 
-==== AddInvocations($invocations)
-Note: AddOriginalUriBaseIds($baseIds) must be called first before AddInvocations($invocations) can be called. This is because paths in the workingDirectory object adjusts to the path set in AddOriginalUriBaseIds($baseIds).
+Note: This method adds only the originalUriBaseIds object. Paths in the SARIF file don't technically adjust to paths passed here. Instead, they adjust to paths passed to the BeginRun($initialData) method.
 
+==== AddSpecialLocations($displayBase)
+Adds the specialLocations property.
+
+==== AddInvocations($invocations)
 This subroutine adds the invocation property.
 
 ==== BeginResults()
-Starts the results property and array. Called once before AddResult($resultData).
+Starts the results property and array. Called once before AddResult($resultData) calls.
 
 ==== AddResult($resultData)
-Every BugInstance in a SCARF file maps to a result object in SARIF. This subroutine writes necessary data for a result object, as well as storing some data that will be written after all result objects are written.
+Every BugInstance in a SCARF file maps to a result object in SARIF. This subroutine writes the data for a result object, and stores some data that will only be written out after all result objects are written.
 
 ==== EndResults()
 Ends the results property and array. Called once after all AddResult($resultData) calls.
@@ -178,10 +177,10 @@ Ends the results property and array. Called once after all AddResult($resultData
 Adds the resources object.
 
 ==== EndRun($endData)
-Data saved previously will be written out here. Also ends the run object.
+Data saved previously will be written out here. Also ends the run object and closes all external files.
 
 ==== EndFile()
-Ends arrays and properties and closes all files opened.
+Ends arrays and properties and closes the main sarif file.
 
 ==== CheckInitialData($initialData)
 Checks whether the required fields in the data structure are set. Program either does nothing, just print errors or dies depending on the error level set.
@@ -189,14 +188,11 @@ Checks whether the required fields in the data structure are set. Program either
 ==== CheckInvocations($invocations)
 Checks whether the required fields in the data structure are set. Program either does nothing, just print errors or dies depending on the error level set.
 
-==== CheckResultData($bugData)
+==== CheckResultData($resultData)
 Checks whether the required fields in the data structure are set. Program either does nothing, just print errors or dies depending on the error level set.
 
 ==== CheckRuleData($ruleData)
 Checks whether the required fields in the data structure are set. Program either does nothing, just print errors or dies depending on the error level set.
-
-==== AddFailure($failureData)
-The only method to call after new() when there is a failure. This subroutine writes a sarif file containing only the conversion object in the run object. Inside the conversion object is the property "toolNotifications" which will contain the error message.
 
 === Data Structures
 The following are the data structures used in the callbacks listed above:
@@ -204,40 +200,210 @@ The following are the data structures used in the callbacks listed above:
 ==== $optionsData
 optionsData contains information that is supposed to be passed to the writer at the beginning for the purpose of configuring the writer.
 
+Option explanations:
+
+pretty - Whether the sarif file will be indented. (Default is FALSE).
+
+error_level - What the writer will do if an error is detected. 0 means do nothing; 1 means to print the error out; 2 means to print the error and die immediately. Note that if a critical error occurs, the program will still die even if the error_level is set to 0 or 1. (Default is 2).
+
+addArtifacts - Whether the run.artifacts object is added to the sarif file
+
+addArtifactsNoLocation - The run.artifacts object will be present and result.locations.physicalLocation.artifactLocation will contain only artifactIndex (no uri & uriBaseId)
+
+For the options addArtifacts and addArtifactsNoLocation, the default behavior is to have the artifacts object and have the complete artifactLocation object in all results. (i.e. addArtifacts is TRUE and addArtifactsNoLocation is FALSE).
+
+addProvenance - Whether the result.provenance object is added to the sarif file (Default is TRUE).
+
+artifactHashes - Whether the writer will attempt to compute or read the file hash for the artifacts.artifact object. (Default is TRUE).
+
+sortKeys - Whether the writer will sort hash objects before printing them out. Useful for debugging purposes. (Default is FALSE).
+
+addSnippets - Whether the writer will attempt to open the artifact, navigate to the target lines and read the lines in order to add the snippet property. (Default is TRUE).
+
+extraSnippets - Whether the writer will attempt to get more lines that the specified Start/End line. Value must be a positive integer. (Default is 0).
+
+external - An object specifying whether a property will be externalized in an external file. Each object has 2 properties - 'name' and 'maxItems'. 'name' specifies the name of the external file and must be named like so: "PROPERTYNAME.sarif-external-properties". 'maxItems' specifies the maximum number of objects of that property type that will be present in each file. Only provide 'maxItems' if the property is an array type. If 'maxItems' is specified, the external file(s) will be named like so: "PROPERTYNAME-1.sarif-external-properties", "PROPERTYNAME-2.sarif-external-properties" and so on. Multiple properties can be externalized in the same file. However, if an external property is an array type, the external property file that contains this external property cannot contain another external property.
+
 ----
 {
-  pretty             => PRETTY_VALUE (Default is false),
-  error_level        => ERROR_LEVEL_VALUE (Default is 2),
+  pretty                 => PRETTY_VALUE,
+  error_level            => ERROR_LEVEL_VALUE (Default is 2),
+  addArtifacts           => TRUE/FALSE,
+  addArtifactsNoLocation => TRUE/FALSE,
+  addProvenance          => TRUE/FALSE,
+  artifactHashes         => TRUE/FALSE,
+  sortKeys               => TRUE/FALSE,
+  addSnippets            => TRUE/FALSE,
+  extraSnippets          => EXTRA_SNIPPETS,
   external => {
     $PROPERTY_NAME => {
-      name           => NAME_VALUE,
-      maxItems       => MAX_ITEMS_VALUE,    # Only for properties that contain arrays
+      name               => NAME_VALUE,
+      maxItems           => MAX_ITEMS_VALUE,    # Only for properties that contain arrays
     },
-  }
+  },
 }
 ----
 
 ==== $initialData
-initialData contains information regarding the assessment. 
+initialData contains information regarding the assessment.
+
+Property explanations:
+
+buildDir - Specifies where the build directory is located at. Use this option 
+if the assessment was performed on a different machine. Currently used only 
+to add the 'snippet' property.
 ----
 {
   build_root_dir     => PACKAGE_DIRECTORY,                        # REQUIRED
   package_root_dir   => DIRECTORY_CONTAINING_PACKAGE,             # REQUIRED
-  results_root_dir   => DIRECTORY_CONTAINING_ASSESSMENT_REPORTS,  # REQUIRED
+  results_root_dir   => DIRECTORY_CONTAINING_RESULTS,             # REQUIRED
   uuid               => UUIDVALUE,                                # REQUIRED
   tool_name          => TOOL_NAME,                                # REQUIRED
   tool_version       => TOOL_VERSION,                             # REQUIRED
   package_name       => PACKAGE_NAME,                             # REQUIRED
-  package_version    => PACKAGE_VERSION                           # REQUIRED
+  package_version    => PACKAGE_VERSION,                          # REQUIRED
   buildDir           => BUILD_DIR_PATH
+}
+----
+
+==== $toolData
+toolData contains information regarding the tool, such as the driver and extensions
+----
+{
+  driver => $toolComponent, 
+  extensions => [
+    $toolComponent, $toolComponent...
+  ]
+}
+----
+
+==== $toolComponent
+----
+{
+  name                           => DRIVER_NAME,              # REQUIRED
+  fullName                       => DRIVER_FULLNAME,
+  guid                           => GUID_VALUE,
+  version                        => DRIVER_VERSION,           # REQUIRED
+  semanticVersion                => SEMANTIC_VERSION,
+  dottedQuadFileVersion          => DOTTED_QUAD_FILE_VERSION,
+  releaseDateUtc                 => RELEASE_DATE_UTC,
+  downloadUri                    => DOWNLOAD_URI,
+  informationUri                 => INFORMATION_URI,
+  organization                   => ORGANIZATION,
+  product                        => PRODUCT
+  productSuite                   => PRODUCT_SUITE
+  shortDescription => {
+    text                         => TEXT_VALUE,
+    markdown                     => MARKDOWN_VALUE,
+  },
+  fullDescription => {
+    text                         => TEXT_VALUE,
+    markdown                     => MARKDOWN_VALUE,
+  }
+  language                       => LANGUAGE,
+  globalMessageStrings => {
+    $PROPERTY_NAME => {
+      text                       => TEXT_VALUE,
+      markdown                   => MARKDOWN_VALUE,
+    },
+  },
+  rules => [
+    $reportingDescriptor, $reportingDescriptor...
+  ],
+  notifications => [
+    $reportingDescriptor, $reportingDescriptor...
+  ]
+  taxa => [
+    $reportingDescriptor, $reportingDescriptor...
+  ]
+  supportedTaxanomies => {
+    name                         => NAME_VALUE,
+    index                        => INDEX_VALUE,
+    guid                         => GUID_VALUE
+  }
+  translationMetadata => {
+    name                         => NAME_VALUE,
+    fullName                     => FULL_NAME
+    shortDescription => {
+      text                       => TEXT_VALUE,
+      markdown                   => MARKDOWN_VALUE
+    },
+    fullDescription => {
+      text                       => TEXT_VALUE,
+      markdown                   => MARKDOWN_VALUE
+    },
+    dowloadUri                   => DOWNLOAD_URI,
+    informationUri               => INFORMATION_URI
+  }
+  contents => [
+    "STRING", "STRING"...
+  ]
+  isComprehensive                => TRUE/FALSE
+  localizedDataSemanticVersion   => VERSION_NUM
+  minimumRequiredLocalizedDataSemanticVersion => VERSION_NUM
+  associatedComponent => {
+    name                         => NAME_VALUE,
+    index                        => INDEX_VALUE,
+    guid                         => GUID_VALUE
+  }
+}
+----
+
+==== $reportingDescriptor
+----
+{
+  id                         => ID_VALUE,
+  deprecatedIds => [
+    $ID_1, $ID_2...          => DEPRECATED_IDS,
+  ],
+  guid                       => GUID_VALUE,
+  deprecatedGuids => [
+    $GUID_1, $GUID_2...      => DEPRECATED_GUIDS,
+  ]
+  name                       => NAME,
+  deprecatedNames => [
+    $NAME_1, $NAME_2...      => DEPRECATED_NAMES,
+  ],
+  shortDescription => {
+    text                     => TEXT_VALUE,
+    markdown                 => MARKDOWN_VALUE,
+  },
+  fullDescription => {
+    text                     => TEXT_VALUE,
+    markdown                 => MARKDOWN_VALUE,
+  },
+  messageStrings => {
+    $PROPERTY_NAME => {
+      text                   => TEXT_VALUE,
+      markdown               => MARKDOWN_VALUE,
+    }, ...
+  },
+  helpUri                    => HELP_URI,
+  help => {
+    text                     => TEXT_VALUE,
+    markdown                 => MARKDOWN_VALUE
+  }
 }
 ----
 
 ==== $baseIds
 ----
 {
-  PACKAGEROOT        => PACKAGE_ROOT_VALUE,                 # REQUIRED
-  RESULTSROOT        => RESULTS_ROOT_VALUE,
+  BUILDROOT => {
+    uri => URI_VALUE,                   # REQUIRED
+    uriBaseId => URIBASEID_VALUE,
+    description => $message_object
+  }
+  PACKAGEROOT => (same object as above),
+  RESULTSROOT => (same object as above)
+}
+----
+
+==== $displayBase
+----
+{
+  uri                     => URI_VALUE
+  uriBaseId               => URIBASEID_VALUE
 }
 ----
 
@@ -245,7 +411,6 @@ initialData contains information regarding the assessment.
 This hash contains the information related to the invocation(s) of the tool
 ----
 {
-  packageRootDir            => PACKAGE_ROOT_DIR_VALUE,
   assessments => [
     {
       commandLine           => COMMAND_LINE_VALUE,
@@ -261,7 +426,7 @@ This hash contains the information related to the invocation(s) of the tool
         'key2' => 'value2',
         ...
       },
-      report                => ASSESSMENT_REPORT_FILE
+      executionSuccessful   => TRUE/FALSE
     },
     ...
   ]
@@ -288,15 +453,15 @@ Each resultData hash contains information for one result object. Fields marked a
     },
     ...
   ],
-  AssessmentReportFile  => ASSESSMENT_REPORT_FILE_NAME, # REQUIRED
-  BuildId               => BUILD_ID_VALUE,              # REQUIRED
-  ClassName             => CLASS_NAME_VALUE,
-  Methods => [
-    {
-      name              => METHODNAMEVALUE,             
-    },
-    ...
-  ],
+  AssessmentReportFile  => ASSESSMENT_REPORT_FILE_NAME,
+  BuildId               => BUILD_ID_VALUE,
+  InstanceLocation => {
+    Xpath               => XPATH_VALUE,
+    LineNum => {
+      Start             => START_VALUE,
+      End               => END_VALUE
+    }
+  }
   BugSeverity           => SEVERITY_VALUE,
   CweIds => [
     CWEIDVALUE, CWEIDVALUE, ...
@@ -339,33 +504,37 @@ This hash contains the sha256 hashes for all files used in the assessment.
 ----
 
 ==== $conversion
-This hash contains information required to write the conversion object in SARIF. All fields are required.
+This hash contains information required to write the conversion object in SARIF. 
+
+Note: The toolExecutionNotifications property is useful for adding information in cases where an assessment failed.
 ----
 {
-  tool_name             => TOOL_NAME,
-  tool_version          => TOOL_VERSION,
-  commandLine           => PROGRAM_NAME,
-  workingDirectory      => WORKING_DIRECTORY,
-  argv => [
-    'ARG1', 'ARG2', ...  # ARGUMENTS
+  tool => {
+    driver => {
+      name              => NAME_VALUE,
+      version           => VERSION_VALUE
+    }
+  },
+  commandLine           => COMMAND_LINE,
+  args => [
+    'ARG1', 'ARG2'...      # ARGUMENTS
   ],
+  workingDirectory      => WORKING_DIRECTORY
   env => {               # ENVIRONMENT_VARIABLES
     'key1' => 'value1',
     'key2' => 'value2',
     ...
   }
+  executionSuccessful   => TRUE/FALSE
+  toolExecutionNotifications => [
+    {
+      level             => LEVEL_VALUE,
+      message => {
+        text            => MESSAGE_TEXT
+      }
+    },
+    ...
+  ]
   startTime             => PROGRAM_START_TIME
-}
-----
-
-==== $failureData
-This hash contains all the information needed to write to a sarif file in the case that the converter finds that the assessment failed. All fields listed below are required.
-----
-{
-  conversion            => (SEE ABOVE),                 # REQUIRED
-  tool => {
-    tool_name           => TOOL_NAME,                   # REQUIRED
-  },
-  message               => ERROR_MESSAGE                # REQUIRED
 }
 ----

@@ -508,12 +508,6 @@ sub CheckResultData {
         push @errors, "Required key BugLocations not found in bugInstance";
     }
 
-    foreach my $method (@{$bugInstance->{Methods}}) {
-        if (!$method->{name}) {
-            push @errors, "Required key name not found in a method object";
-        }
-    }
-
     return \@errors;
 }
 
@@ -649,34 +643,36 @@ sub AddResult {
     if ($self->{addProvenance}) {
         $writer->start_property("provenance");
         $writer->start_object();
-        if ($self->{hasInvocations}) {
+        if ($self->{hasInvocations} && defined $bugData->{BuildId}) {
             $writer->add_property("invocationIndex", $bugData->{BuildId} - 1);
         }
         $writer->start_property("conversionSources");
         $writer->start_array();
         $writer->start_object();
 
-        my $artifactBaseId = "RESULTSROOT";
-        my $artifactIndex;
-        if (exists $self->{artifacts}{$artifactBaseId}{$bugData->{AssessmentReportFile}}) {
-            $artifactIndex = $self->{artifacts}{$artifactBaseId}{$bugData->{AssessmentReportFile}}{index};
-        } else {
-            my %struct = (
-                uri => $bugData->{AssessmentReportFile},
-                uriBaseId => $artifactBaseId,
-                index => $self->{artifacts_counter}
-            );
-            $self->{artifacts}{$artifactBaseId}{$bugData->{AssessmentReportFile}} = \%struct;
-            push @{$self->{artifacts_array}}, \%struct;
-            $artifactIndex = $self->{artifacts_counter}++;
-        }
-        if ($self->{addArtifactsNoLocation}) {
-            AddArtifactLocation($writer, undef, undef, $artifactIndex, 1);
-        } else {
-            if ($self->{addArtifacts}) {
-                AddArtifactLocation($writer, $bugData->{AssessmentReportFile}, $artifactBaseId, $artifactIndex, 1);
+        if ($bugData->{AssessmentReportFile}) {
+            my $artifactBaseId = "RESULTSROOT";
+            my $artifactIndex;
+            if (exists $self->{artifacts}{$artifactBaseId}{$bugData->{AssessmentReportFile}}) {
+                $artifactIndex = $self->{artifacts}{$artifactBaseId}{$bugData->{AssessmentReportFile}}{index};
             } else {
-                AddArtifactLocation($writer, $bugData->{AssessmentReportFile}, $artifactBaseId, undef, 1);
+                my %struct = (
+                    uri => $bugData->{AssessmentReportFile},
+                    uriBaseId => $artifactBaseId,
+                    index => $self->{artifacts_counter}
+                );
+                $self->{artifacts}{$artifactBaseId}{$bugData->{AssessmentReportFile}} = \%struct;
+                push @{$self->{artifacts_array}}, \%struct;
+                $artifactIndex = $self->{artifacts_counter}++;
+            }
+            if ($self->{addArtifactsNoLocation}) {
+                AddArtifactLocation($writer, undef, undef, $artifactIndex, 1);
+            } else {
+                if ($self->{addArtifacts}) {
+                    AddArtifactLocation($writer, $bugData->{AssessmentReportFile}, $artifactBaseId, $artifactIndex, 1);
+                } else {
+                    AddArtifactLocation($writer, $bugData->{AssessmentReportFile}, $artifactBaseId, undef, 1);
+                }
             }
         }
 
@@ -688,7 +684,7 @@ sub AddResult {
             $writer->end_object();
             $writer->end_property();
         }
-
+        
         $writer->end_object();
         $writer->end_array();
         $writer->end_property();
@@ -1236,23 +1232,25 @@ sub AddInvocationObject {
         $writer->end_property();
     }
 
-    $writer->start_property("workingDirectory");
-    $writer->start_object();
-    if (!$isConversion) {
-        # Necessary to AdjustPath() twice because the workingDirectory is an absolute path
-        my $wd = AdjustPath(".", $self->{build_root_dir}, $self->{package_root_dir});
-        $wd = AdjustPath($wd, ".", $invocation->{workingDirectory});
-        $writer->add_property("uri", $wd);
-        $writer->add_property("uriBaseId", "PACKAGEROOT");
+    if ($invocation->{workingDirectory}) {
+        $writer->start_property("workingDirectory");
+        $writer->start_object();
+        if (!$isConversion) {
+            # Necessary to AdjustPath() twice because the workingDirectory is an absolute path
+            my $wd = AdjustPath(".", $self->{build_root_dir}, $self->{package_root_dir});
+            $wd = AdjustPath($wd, ".", $invocation->{workingDirectory});
+            $writer->add_property("uri", $wd);
+            $writer->add_property("uriBaseId", "PACKAGEROOT");       
+        } else {
+            $writer->add_property("uri", $invocation->{workingDirectory});
+        }
         $writer->end_object();
-        $writer->end_property();
+        $writer->end_property();  
+    }
 
+    if (!$isConversion) {
         CheckAndAddInvocation($writer, "exitCode", $invocation->{exitCode});
     } else {
-        $writer->add_property("uri", $invocation->{workingDirectory});
-        $writer->end_object();
-        $writer->end_property();
-
         CheckAndAddInvocation($writer, "exitCode", 0);
     }
 
@@ -1269,6 +1267,19 @@ sub AddInvocationObject {
     $writer->start_property("executionSuccessful");
     $writer->add_boolean($invocation->{executionSuccessful});
     $writer->end_property();
+
+    if ($invocation->{toolExecutionNotifications}) {
+        $writer->start_property("toolExecutionNotifications");
+        $writer->start_array();
+        foreach my $n (@{$invocation->{toolExecutionNotifications}}) {
+            $writer->start_object();
+            $writer->add_property("level", $n->{level});
+            AddMessage($writer, $n->{message}, 1);
+            $writer->end_object();
+        }
+        $writer->end_array();
+        $writer->end_property();
+    }
 
     CheckAndAddInvocation($writer, "startTimeUtc", ConvertEpoch($invocation->{startTime}));
     if (!$isConversion) {
@@ -1404,104 +1415,6 @@ sub AddPropertiesObject {
     $writer->add_property("packageVersion", $initialData->{package_version});
     $writer->end_object();
     $writer->end_property();
-}
-
-# Only method to call after new() when there is a failure.
-# Writes only a sarif file with the conversion object.
-# Inside the conversion object is the property "toolNotifications"
-# which will contain the error message
-sub AddFailure {
-    my ($self, $data) = @_;
-    my $writer = $self->{writer};
-    my $conversion = $data->{conversion};
-
-    $writer->start_object(); # Start sarif object
-    $writer->add_property("version", $sarifVersion);
-    $writer->add_property("\$schema", $sarifSchema);
-    $writer->start_property("runs");
-    $writer->start_array();
-    $writer->start_object(); # Start new run object
-
-    # start tool object
-    $writer->start_property("tool");
-    $writer->start_object();
-    $writer->start_property("driver");
-    $writer->start_object();
-    $writer->add_property("name", $data->{tool}{tool_name});
-    $writer->end_object();
-    $writer->end_property();
-    $writer->end_object();
-    $writer->end_property();
-
-    # start conversion object
-    $writer->start_property("conversion");
-    $writer->start_object();
-    $writer->start_property("tool");
-    $writer->start_object();
-    $writer->start_property("driver");
-    $writer->start_object();
-    $writer->add_property("name", $conversion->{tool_name});
-    $writer->add_property("version", $conversion->{tool_version});
-    $writer->end_object();
-    $writer->end_property();
-    $writer->end_object();
-    $writer->end_property();
-
-    $writer->start_property("invocation");
-
-    $writer->start_object();
-    $writer->add_property("commandLine", $conversion->{commandLine});
-
-    $writer->start_property("arguments");
-    $writer->start_array();
-    foreach my $arg (@{$conversion->{argv}}) {
-        $writer->add_string($arg);
-    }
-    $writer->end_array();
-    $writer->end_property();
-
-    $writer->start_property("workingDirectory");
-    $writer->start_object();
-    $writer->add_property("uri", $conversion->{workingDirectory});
-    $writer->end_object();
-    $writer->end_property();
-
-    $writer->start_property("environmentVariables");
-    $writer->start_object();
-    foreach my $key (keys %{$conversion->{env}}) {
-        $writer->add_property($key, $conversion->{env}{$key});
-    }
-    $writer->end_object();
-    $writer->end_property();
-
-    $writer->start_property("toolNotifications");
-    $writer->start_array();
-    $writer->start_object();
-    $writer->add_property("level", "error");
-    $writer->start_property("message");
-    $writer->start_object();
-    $writer->add_property("text", $data->{message});
-    $writer->end_object();
-    $writer->end_property();
-    $writer->end_object();
-    $writer->end_array();
-    $writer->end_property();
-
-    $writer->add_property("exitCode", 0);
-    $writer->add_property("startTimeUtc", ConvertEpoch($conversion->{startTime}));
-    $writer->add_property("endTimeUtc", ConvertEpoch(time()));
-
-    $writer->end_object();
-    $writer->end_property(); # end invocation
-
-    $writer->end_object();
-    $writer->end_property(); # end conversion
-
-    $writer->end_object();
-    $writer->end_array();
-    $writer->end_property();
-    $writer->end_object();
-    close $self->{fh};
 }
 
 # Helper function to check if a given property in invocation exists and
