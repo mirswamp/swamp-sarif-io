@@ -280,7 +280,7 @@ sub BeginRun {
 
     # Start external files
     foreach my $key (keys %{$self->{external}}) {
-        # Find unique external writers
+        # Find unique external writers (only unique ones have the fh property)
         if (exists $self->{external}{$key}{fh}) {
             StartExternal($self, $key);
         }
@@ -316,7 +316,7 @@ sub AddToolData {
 
 }
 
-# Start writing data to the external file
+# Helper method to start writing data to the external file
 sub StartExternal {
     my ($self, $key) = @_;
     my $writer = $self->{xwriters}{$key};
@@ -365,6 +365,7 @@ sub AddOriginalUriBaseIds {
     $writer->end_property();
 }
 
+# Adds the specialLocations property
 sub AddSpecialLocations {
     my ($self, $displayBase) = @_;
     my $writer = $self->{writer};
@@ -378,7 +379,7 @@ sub AddSpecialLocations {
     $writer->end_property();
 }
 
-# Checks if new external file needs to be opened,
+# Helper method that checks if a new external file needs to be opened (maxItems reached),
 # and opens a new one if so
 sub NewExternal {
     my ($self, $key) = @_;
@@ -400,6 +401,8 @@ sub NewExternal {
         if ($self->{external}{$key}{originalFileName} =~ /(.+)\.sarif-external-properties/) {
             my $num = @{$self->{external}{$key}{currItems}} + 1;
             $newName = $1."-".$num.".sarif-external-properties";
+        } else {
+            die "Unable to parse external property file name -- unable to open new external property file: $!";
         }
         open(my $fh, '>:encoding(UTF-8)', $newName) or
         die "Can't open $newName: $!";
@@ -442,7 +445,7 @@ sub CheckInvocations {
     return \@errors;
 }
 
-# Helper method to write the invocations object
+# Adds the invocation property
 sub AddInvocations {
     my ($self, $invocations) = @_;
     my $writer;
@@ -584,19 +587,17 @@ sub AddResult {
         $writer->add_property("rank", MakeInt($bugData->{BugRank}));
     }
 
-    if ($bugData->{BugMessage}) {
-        my $message = $bugData->{BugMessage};
-        $message =~ s/(\n\n )?Bug\ Path:\s* $ $ .*\Z//xms;
-        if (!$message) {
-            $message = "No message exists. Try looking at messages in each location."
-        }
-
-        $writer->start_property("message");
-        $writer->start_object();
-        $writer->add_property("text", $message);
-        $writer->end_object();
-        $writer->end_property();
+    my $message = $bugData->{BugMessage};
+    $message =~ s/(\n\n )?Bug\ Path:\s* $ $ .*\Z//xms;
+    if (!$message) {
+        $message = "No message exists. Try looking at messages in each location."
     }
+
+    $writer->start_property("message");
+    $writer->start_object();
+    $writer->add_property("text", $message);
+    $writer->end_object();
+    $writer->end_property();
     
     my $numLocations = @{$bugData->{BugLocations}};
     if ($numLocations > 0) {
@@ -645,7 +646,7 @@ sub AddResult {
         $writer->end_property();
     }
 
-    if (defined $self->{addProvenance} && $self->{addProvenance}) {
+    if ($self->{addProvenance}) {
         $writer->start_property("provenance");
         $writer->start_object();
         if ($self->{hasInvocations}) {
@@ -906,18 +907,12 @@ sub AddToolComponentObject {
     $writer->add_property("productSuite", $toolData->{productSuite}) if $toolData->{productSuite};
     if ($toolData->{shortDescription}) {
         $writer->start_property("shortDescription");
-        $writer->start_object();
-        $writer->add_property("text", $toolData->{shortDescription}{text}) if $toolData->{shortDescription}{text};
-        $writer->add_property("markdown", $toolData->{shortDescription}{markdown}) if $toolData->{shortDescription}{markdown};
-        $writer->end_object();
+        AddMultiformatMessageString($writer, $toolData->{shortDescription});
         $writer->end_property();
     }
     if ($toolData->{fullDescription}) {
         $writer->start_property("fullDescription");
-        $writer->start_object();
-        $writer->add_property("text", $toolData->{fullDescription}{text}) if $toolData->{fullDescription}{text};
-        $writer->add_property("markdown", $toolData->{fullDescription}{markdown}) if $toolData->{fullDescription}{markdown};
-        $writer->end_object();
+        AddMultiformatMessageString($writer, $toolData->{fullDescription});
         $writer->end_property();
     }
     $writer->add_property("language", $toolData->{language}) if $toolData->{language};
@@ -933,10 +928,7 @@ sub AddToolComponentObject {
         foreach my $key (@globalMessageStringsKeys) {
             next unless defined $toolData->{globalMessageStrings}{$key};
             $writer->start_property($key);
-            $writer->start_object();
-            $writer->add_property("text", $toolData->{globalMessageStrings}{text}) if $toolData->{globalMessageStrings}{text};
-            $writer->add_property("markdown", $toolData->{globalMessageStrings}{markdown}) if $toolData->{globalMessageStrings}{markdown};
-            $writer->end_object();
+            AddMultiformatMessageString($writer, $toolData->{globalMessageStrings}{$key});
             $writer->end_property();
         }
         $writer->end_object();
@@ -981,7 +973,6 @@ sub AddToolComponentObject {
         AddTranslationMetadataObject($self, $writer, $toolData->{translationMetadata});
         $writer->end_property();
     }
-    # Add locations property here
     if ($toolData->{contents} && @{$toolData->{contents}}) {
         $writer->start_property("contents");
         $writer->start_array();
@@ -1058,8 +1049,6 @@ sub AddExternalPropertyFiles {
             $writer->end_property();
         }
     }
-
-    print Dumper($self->{external});
 
     $writer->end_object();
     $writer->end_property();
@@ -1300,7 +1289,6 @@ sub AddLocation {
     $writer->add_property("id", $id);
 
     AddPhysicalLocation($self, $writer, $location) if $location->{physicalLocation};
-    #AddLogicalLocation($self, $writer, $location->{logicalLocation}) if $location->{logicalLocation};
     AddMessage($writer, $location->{message}, 1) if $location->{message};
 
     # The AddRegionObject() method is not using the right data structure yet (still follows SCARF structure)
@@ -1543,67 +1531,66 @@ sub AddArtifactsObject {
 
     BeginPropertyArray($self, "artifacts");
 
-    if (%{$self->{artifacts}{PACKAGEROOT}} || %{$self->{artifacts}{RESULTSROOT}}) {
-        foreach my $artifact (@{$self->{artifacts_array}}) {
-            if (NewExternal($self, "artifacts")) { # Creates a new external file is needed
-                $writer = $self->{xwriters}{artifacts}; # Reassigns the writer variable
-            }
+    foreach my $artifact (@{$self->{artifacts_array}}) {
+        if (NewExternal($self, "artifacts")) { # Creates a new external file is needed
+            $writer = $self->{xwriters}{artifacts}; # Reassigns the writer variable
+        }
 
-            my $artifactname = AdjustPath($self->{package_root_dir}, ".", $artifact->{uri});
+        my $artifactname = AdjustPath($self->{package_root_dir}, ".", $artifact->{uri});
 
-            $writer->start_object();
+        $writer->start_object();
 
-            $writer->start_property("location");
-            $writer->start_object();
-            $writer->add_property("uri", $artifactname);
-            $writer->add_property("uriBaseId", $artifact->{uriBaseId});
-            $writer->end_object();
-            $writer->end_property();
+        $writer->start_property("location");
+        $writer->start_object();
+        $writer->add_property("uri", $artifactname);
+        $writer->add_property("uriBaseId", $artifact->{uriBaseId});
+        $writer->end_object();
+        $writer->end_property();
 
-            if ($artifact->{uriBaseId} eq "PACKAGEROOT") {
-                $writer->add_property("roles", ["resultFile"]);
-            }
+        if ($artifact->{uriBaseId} eq "PACKAGEROOT") {
+            $writer->add_property("roles", ["resultFile"]);
+        }
 
-            if ($self->{artifactHashes}) {
-                my $sha256;
-                if ($sha256hashes && $artifact->{uriBaseId} eq "PACKAGEROOT") {
-                    # if a file containing all the hashes is provided
-                    my $hashPath = "build/".$artifact->{uri};
-                    $sha256 = FindSha256Hash($sha256hashes, $hashPath);
-                } else {
-                    # no file containing all the hashes is provided, so attempt to compute it myself
-                    my $hashPath;
-                    if ($artifact->{uriBaseId} eq "PACKAGEROOT") {
-                        $hashPath = AdjustPath($self->{package_root_dir}, $self->{build_root_dir}, $artifact->{uri});
-                    } elsif ($artifact->{uriBaseId} eq "RESULTSROOT") {
-                        $hashPath = AdjustPath(".", $self->{results_root_dir}, $artifact->{uri});
-                    }
-                    if (-r $hashPath && -f $hashPath) {
-                        $sha256 = digest_file_hex($hashPath, "SHA-256");
-                    }
+        if ($self->{artifactHashes}) {
+            my $sha256;
+            if ($sha256hashes && $artifact->{uriBaseId} eq "PACKAGEROOT") {
+                # if a file containing all the hashes is provided
+                my $hashPath = "build/".$artifact->{uri};
+                $sha256 = FindSha256Hash($sha256hashes, $hashPath);
+            } else {
+                # no file containing all the hashes is provided, so attempt to compute it myself
+                my $hashPath;
+                if ($artifact->{uriBaseId} eq "PACKAGEROOT") {
+                    $hashPath = AdjustPath($self->{package_root_dir}, $self->{build_root_dir}, $artifact->{uri});
+                } elsif ($artifact->{uriBaseId} eq "RESULTSROOT") {
+                    $hashPath = AdjustPath(".", $self->{results_root_dir}, $artifact->{uri});
                 }
-
-                if ($sha256) {
-                    $writer->start_property("hashes");
-                    $writer->start_object();
-                    $writer->add_property("sha-256", $sha256);
-                    $writer->end_object();
-                    $writer->end_property();
-                } elsif ($self->{error_level} > 0) {
-                    print STDERR "Unable to find sha256 hash for $artifact->{uri}\n";
-                    if ($self->{error_level} == 2) {
-                        die "Unable to find sha256hash. Exiting."
-                    }
+                if (-r $hashPath && -f $hashPath) {
+                    $sha256 = digest_file_hex($hashPath, "SHA-256");
                 }
             }
 
-            $writer->end_object();
-
-            if ($self->{external}{artifacts} && exists $self->{external}{artifacts}{currItems}) {
-                $self->{external}{artifacts}{currItems}[-1] += 1;
+            if ($sha256) {
+                $writer->start_property("hashes");
+                $writer->start_object();
+                $writer->add_property("sha-256", $sha256);
+                $writer->end_object();
+                $writer->end_property();
+            } elsif ($self->{error_level} > 0) {
+                print STDERR "Unable to find sha256 hash for $artifact->{uri}\n";
+                if ($self->{error_level} == 2) {
+                    die "Unable to find sha256hash. Exiting."
+                }
             }
         }
+
+        $writer->end_object();
+
+        if ($self->{external}{artifacts} && exists $self->{external}{artifacts}{currItems}) {
+            $self->{external}{artifacts}{currItems}[-1] += 1;
+        }
     }
+
 
     EndPropertyArray($self, "artifacts");
 }
