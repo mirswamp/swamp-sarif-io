@@ -526,11 +526,10 @@ sub BeginPropertyArray {
 
     if ($self->{xwriters}{$key}) {
         $writer = $self->{xwriters}{$key};
-        $writer->start_property("run.".$key);
     } else {
         $writer = $self->{writer};
-        $writer->start_property($key);
     }
+    $writer->start_property($key);
     $writer->start_array();
 }
 
@@ -1404,7 +1403,7 @@ sub AddPropertiesObject {
 
     if ($self->{xwriters}{properties}) {
         $writer = $self->{xwriters}{properties};
-        $writer->start_property("run.properties");
+        $writer->start_property("externalizedProperties");
     } else {
         $writer = $self->{writer};
         $writer->start_property("properties");
@@ -1601,12 +1600,11 @@ sub AddConversionObject {
 
     if ($self->{xwriters}{conversion}) {
         $writer = $self->{xwriters}{conversion};
-        $writer->start_property("run.conversion");
     } else {
         $writer = $self->{writer};
-        $writer->start_property("conversion");
     }
 
+    $writer->start_property("conversion");
     $writer->start_object();
 
     $writer->start_property("tool");
