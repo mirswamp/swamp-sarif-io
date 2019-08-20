@@ -52,6 +52,8 @@ sub new {
     $self->{artifacts_counter} = 0;
     $self->{artifacts} = {}; # Hash to lookup if file has been read before
     $self->{artifacts_array} = (); # Array of structs for all artifacts
+    $self->{invocation_indexes} = {}; # Hash to store map of buildId to invocationIndex
+    $self->{invocation_index_counter} = 0;
     $self->{numBugs} = 0; # keep track of number of results added for the result parser to print the weaknesses count file
 
     # Know what is externalizable and if the type is an object or array
@@ -643,7 +645,7 @@ sub AddResult {
         $writer->start_property("provenance");
         $writer->start_object();
         if ($self->{hasInvocations} && defined $bugData->{BuildId}) {
-            $writer->add_property("invocationIndex", $bugData->{BuildId} - 1);
+            $writer->add_property("invocationIndex", $self->{invocation_indexes}{$bugData->{BuildId}});
         }
         $writer->start_property("conversionSources");
         $writer->start_array();
@@ -1200,6 +1202,15 @@ sub AddTranslationMetadataObject {
 # Helper method to write an invocation object
 sub AddInvocationObject {
     my ($self, $writer, $invocation, $isConversion) = @_;
+
+    if (!$isConversion) {
+        if (!exists $self->{invocation_indexes}{$invocation->{"build-artifact-id"}}) {
+            $self->{invocation_indexes}{$invocation->{"build-artifact-id"}} = $self->{invocation_index_counter};
+            $self->{invocation_index_counter} += 1;
+        } else {
+            die "This invocation object's build-artifact-id exists in another invocation object, which should not be possible.";
+        }
+    }
 
     $writer->start_object();
 
