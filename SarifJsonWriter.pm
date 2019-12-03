@@ -55,6 +55,7 @@ sub new {
     $self->{invocation_indexes} = {}; # Hash to store map of buildId to invocationIndex
     $self->{invocation_index_counter} = 0;
     $self->{numBugs} = 0; # keep track of number of results added for the result parser to print the weaknesses count file
+    $self->{numMetrics} = 0;
 
     # Know what is externalizable and if the type is an object or array
     %{$self->{externalizableObject}} = (
@@ -835,7 +836,9 @@ sub CheckMetric {
 # This method is supported in ScarfXmlWriter, but is not
 # currently supported by SarifJsonWriter
 sub AddMetric {
+    my ($self, $metric) = @_;
 
+    ++$self->{numMetrics};
 }
 
 # This method is supported in ScarfXmlWriter, but is not
@@ -844,10 +847,38 @@ sub AddSummary {
 
 }
 
+# Returns the number of bugs
 sub GetNumBugs {
     my ($self) = @_;
 
     return $self->{numBugs};
+}
+
+# Returns the number of metrics
+sub GetNumMetrics {
+    my ($self) = @_;
+
+    return $self->{numMetrics};
+}
+
+# Get filenames created by SarifJsonWriter
+sub GetWriterAttrs {
+    my ($self, $hash) = @_;
+
+    $hash->{'sarif-file'} = $self->{output};
+
+    foreach my $key (keys %{$self->{external}}) {
+        if ($self->{external}{$key}{maxItems}) {
+            my $keyName = "sarif-$key-";
+            my $length = @{$self->{external}{$key}{fileName}};
+
+            for (my $i = 1; $i <= $length; $i++) {
+                $hash->{$keyName . "$i-file"} = $self->{external}{$key}{fileName}[$i-1];
+            }
+        } else {
+            $hash->{"sarif-$key-file"} = $self->{external}{$key}{fileName}[0];
+        }
+    }
 }
 
 # Closes results array, write data saved from AddBugInstance()
