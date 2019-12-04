@@ -161,8 +161,9 @@ sub SetOptions {
 
                         # change file name to add a "-1" at the back (means the first external file)
                         $self->{external}{$key}{originalFileName} = $options->{external}{$key}{name};
-                        if ($options->{external}{$key}{name} =~ /(.+)\.sarif/) {
+                        if ($options->{external}{$key}{name} =~ /(.+)\.sarif-external-properties(\.json)?$/) {
                             $options->{external}{$key}{name} = $1."-1".".sarif-external-properties";
+                            $options->{external}{$key}{name} .= $2 if $2; # if name ends in .json
                         } else {
                             die "Cannot determine proper file name for external file with property $key: $!";
                         }
@@ -401,9 +402,10 @@ sub NewExternal {
         close $self->{external}{$key}{fh};
         
         my $newName;
-        if ($self->{external}{$key}{originalFileName} =~ /(.+)\.sarif-external-properties/) {
+        if ($self->{external}{$key}{originalFileName} =~ /(.+)\.sarif-external-properties(\.json)?$/) {
             my $num = @{$self->{external}{$key}{currItems}} + 1;
             $newName = $1."-".$num.".sarif-external-properties";
+            $newName .= $2 if $2; # if name ends in .json
         } else {
             die "Unable to parse external property file name -- unable to open new external property file: $!";
         }
