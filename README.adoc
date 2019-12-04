@@ -147,6 +147,9 @@ Returns the total number of result objects added.
 ==== GetNumMetrics()
 Returns the total number of metrics.
 
+==== GetWriterAttrs($hash)
+Adds filenames created by SarifJsonWriter to $hash.
+
 ==== BeginFile()
 This subroutine writes the version and schema properties and starts the runs array.
 
