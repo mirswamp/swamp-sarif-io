@@ -20,7 +20,7 @@ limitations under the License.
 ////
 Module Version: 1.0.0
 
-Last updated on 05-15-2019
+Last updated on 12-05-2019
 
 Sarif version currently tracking: 2.1.0
 
@@ -214,9 +214,9 @@ error_level - What the writer will do if an error is detected. 0 means do nothin
 
 addArtifacts - Whether the run.artifacts object is added to the sarif file
 
-addArtifactsNoLocation - The run.artifacts object will be present and result.locations.physicalLocation.artifactLocation will contain only artifactIndex (no uri & uriBaseId)
+preferOnlyArtifactIndex - If run.artifacts is present then result.locations.physicalLocation.artifactLocation will contain only artifactIndex (no uri & uriBaseId).
 
-For the options addArtifacts and addArtifactsNoLocation, the default behavior is to have the artifacts object and have the complete artifactLocation object in all results. (i.e. addArtifacts is TRUE and addArtifactsNoLocation is FALSE).
+For the options addArtifacts and preferOnlyArtifactIndex, the default behavior is to have the artifacts object and have the complete artifactLocation object in all results. (i.e. addArtifacts is TRUE and preferOnlyArtifactIndex is FALSE).
 
 addProvenance - Whether the result.provenance object is added to the sarif file (Default is TRUE).
 
@@ -232,19 +232,19 @@ external - An object specifying whether a property will be externalized in an ex
 
 ----
 {
-  pretty                 => PRETTY_VALUE,
-  error_level            => ERROR_LEVEL_VALUE (Default is 2),
-  addArtifacts           => TRUE/FALSE,
-  addArtifactsNoLocation => TRUE/FALSE,
-  addProvenance          => TRUE/FALSE,
-  artifactHashes         => TRUE/FALSE,
-  sortKeys               => TRUE/FALSE,
-  addSnippets            => TRUE/FALSE,
-  extraSnippets          => EXTRA_SNIPPETS,
+  pretty                  => PRETTY_VALUE,
+  error_level             => ERROR_LEVEL_VALUE (Default is 2),
+  addArtifacts            => TRUE/FALSE,
+  preferOnlyArtifactIndex => TRUE/FALSE,
+  addProvenance           => TRUE/FALSE,
+  artifactHashes          => TRUE/FALSE,
+  sortKeys                => TRUE/FALSE,
+  addSnippets             => TRUE/FALSE,
+  extraSnippets           => EXTRA_SNIPPETS,
   external => {
     $PROPERTY_NAME => {
-      name               => NAME_VALUE,
-      maxItems           => MAX_ITEMS_VALUE,    # Only for properties that contain arrays
+      name                => NAME_VALUE,
+      maxItems            => MAX_ITEMS_VALUE,    # Only for properties that contain arrays
     },
   },
 }

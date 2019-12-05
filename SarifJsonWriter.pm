@@ -105,16 +105,17 @@ sub SetOptions {
 
     if (defined $options->{addArtifacts}) {
         $self->{addArtifacts} = $options->{addArtifacts} ? 1 : 0;
+    } else {
+        $self->{preferOnlyArtifactIndex} = 0;
     }
-    if (defined $options->{addArtifactsNoLocation}) {
-        $self->{addArtifactsNoLocation} = $options->{addArtifactsNoLocation} ? 1 : 0;
+
+    if (defined $options->{preferOnlyArtifactIndex}) {
+        $self->{preferOnlyArtifactIndex} = $options->{preferOnlyArtifactIndex} ? 1 : 0;
     }
-    if (defined $options->{addArtifacts} && !$options->{addArtifacts} && $options->{addArtifactsNoLocation}) {
-        push @errors, 'Cannot make addArtifactsNoLocation true while addArtifacts is false';
-    }
-    if (!defined $options->{addArtifacts} && !defined $options->{addArtifactsNoLocation}) {
+
+    if (!defined $options->{addArtifacts} && !defined $options->{preferOnlyArtifactIndex}) {
         $self->{addArtifacts} = 1;
-        $self->{addArtifactsNoLocation} = 0;
+        $self->{preferOnlyArtifactIndex} = 0;
     }
 
     if (defined $options->{addProvenance}) {
@@ -673,7 +674,7 @@ sub AddResult {
                 push @{$self->{artifacts_array}}, \%struct;
                 $artifactIndex = $self->{artifacts_counter}++;
             }
-            if ($self->{addArtifactsNoLocation}) {
+            if ($self->{preferOnlyArtifactIndex}) {
                 AddArtifactLocation($writer, undef, undef, $artifactIndex, 1);
             } else {
                 if ($self->{addArtifacts}) {
@@ -892,7 +893,7 @@ sub EndRun {
     my ($self, $endData) = @_;
     my $writer = $self->{writer};
 
-    if ($self->{addArtifacts} || $self->{addArtifactsNoLocation}) {
+    if ($self->{addArtifacts} || $self->{preferOnlyArtifactIndex}) {
         AddArtifactsObject($self, $endData->{sha256hashes});
     }
     if (keys %{$self->{xwriters}} > 0) {
@@ -1396,7 +1397,7 @@ sub AddPhysicalLocation {
             $artifactIndex = $self->{artifacts_counter}++;
         }
 
-        if ($self->{addArtifactsNoLocation}) {
+        if ($self->{preferOnlyArtifactIndex}) {
             AddArtifactLocation($writer, undef, undef, $artifactIndex, 1);
         } else {
             if ($self->{addArtifacts}) {
