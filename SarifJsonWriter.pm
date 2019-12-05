@@ -151,6 +151,10 @@ sub SetOptions {
         my %opened; # for where more than 1 object is externalized in same external file
         foreach my $key (keys %{$options->{external}}) {
             if ($options->{external}{$key}) {
+                if (!defined $options->{external}{$key}{name}) {
+                    die "key 'name' does not exist in the hash for external property '$key'";
+                }
+
                 if (exists $opened{$options->{external}{$key}{name}}) {
                     my $value = $opened{$options->{external}{$key}{name}};
                     $self->{external}{$key}{guid} = $self->{external}{$value}{guid};
