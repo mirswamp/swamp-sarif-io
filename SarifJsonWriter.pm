@@ -3,7 +3,7 @@
 # https://github.com/mirswamp/swamp-sarif-io
 # SWAMP: https://continuousassurance.org
 #
-# Copyright 2018 Yuan Zhe Bugh, James A. Kupsch
+# Copyright 2018-2020 Yuan Zhe Bugh, James A. Kupsch
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
