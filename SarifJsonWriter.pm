@@ -510,8 +510,14 @@ sub CheckResultData {
             if (!$location->{SourceFile} && $location->{EndLine}) {
                 push @errors, "Can't have EndLine when SourceFile doesn't exist";
             }
-            if ($location->{StartLine} && $location->{EndLine} && $location->{EndLine} > $location->{StartLine}) {
-                push @errors, "EndLine is greater than StartLine";
+            if ($location->{StartLine} && $location->{EndLine})  {
+		if ($location->{StartLine} > $location->{EndLine}) {
+		    push @errors, "StartLine is greater than EndLine";
+		}  elsif ($location->{StartLine} == $location->{EndLine} 
+			&& $location->{StartColumn} && $location->{EndColumn}
+			&& $location->{StartColumn} > $location->{EndColumn}) {
+		    push @errors, "StartColumn is greater than EndColumn on same line";
+		}
             }
         }
     } else {
@@ -1539,9 +1545,9 @@ sub AddArtifactsObject {
                 $writer->end_property();
             } elsif ($self->{error_level} > 0) {
                 print STDERR "Unable to find sha256 hash for $artifact->{uri}\n";
-                if ($self->{error_level} == 2) {
-                    die "Unable to find sha256hash. Exiting."
-                }
+                # if ($self->{error_level} == 2) {
+                #     die "Unable to find sha256hash."
+                # }
             }
         }
 
